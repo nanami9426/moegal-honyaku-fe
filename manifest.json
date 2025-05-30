@@ -1,0 +1,20 @@
+{
+    "manifest_version": 3,
+    "name": "Moegal Honyaku FE",
+    "version": "1.0",
+    "description": "This is the frontend script of the Moegal Honyaku project.",
+    "permissions": ["scripting", "activeTab"],
+    "host_permissions": ["<all_urls>"],
+    "content_scripts": [
+      {
+        "matches": ["<all_urls>"],
+        "js": ["content.js", "popup.js"],
+        "css": ["inject.css"]
+      }
+    ],
+    "action": {
+      "default_title": "Moegal Honyaku",
+      "default_popup": "popup.html"
+    }
+  }
+  

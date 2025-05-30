@@ -1,0 +1,16 @@
+.translate-btn {
+    background-color: rgb(0, 150, 250);
+    color: rgb(255, 255, 255);
+    border: none;
+    padding: 6px 10px;
+    border-radius: 3px;
+    font-size: 13px;
+    font-family: 'SimHei';
+    cursor: pointer;
+    transition: 0.2s;
+  }
+  .translate-btn:hover {
+    background-color: rgb(0, 120, 220);
+    transition: 0.2s;
+  }
+  
