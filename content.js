@@ -47,20 +47,17 @@ function createTranslateButton(img) {
             const result = await response.json()
             console.log("-------------------------------------")
             console.log(`耗时：${result.duration}，花费${result.price}`)
-            for(let i = 0; i < result.cn_text.length; i++){
-                console.log(`原句：${result.raw_text[i]}`)
-                console.log(`翻译：${result.cn_text[i]}`)
-                console.log("\n")
-            }
+            console.log(`原句：${result.raw_text}`)
+            console.log(`翻译：${result.cn_text}`)
             console.log("-------------------------------------")
             if (result.status !== "success") {
-                throw new Error(result.info || "翻译接口返回错误")
+                throw new Error(result.info || "error")
             }
             img.src = "data:image/png;base64," + result.res_img
             button.textContent = "翻译完成"
         } catch (e) {
             console.error("翻译失败:", e)
-            button.textContent = "失败，重试"
+            button.textContent = "翻译失败"
         }
         setTimeout(() => {
             button.textContent = "翻译图片"
