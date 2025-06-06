@@ -42,7 +42,7 @@ function createTranslateButton(img) {
                     image_url: imageUrl,
                     referer: baseUrl
                 })
-            });
+            })
             if (!response.ok) throw new Error("请求失败")
             const result = await response.json()
             console.log("-------------------------------------")

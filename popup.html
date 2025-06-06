@@ -7,7 +7,28 @@
 </head>
 <body>
   <h3>Moegal Honyaku</h3>
-  <button id="helloBtn">点我</button>
+  <br><br>
+  <form>
+    <label for="translate_engine">选择翻译接口：</label>
+    <select id="translate_engine">
+      <option value="ernie">ernie</option>
+      <option value="openai">openai</option>
+    </select>
+    <br>
+    <label for="api_key_input">API key：</label>
+    <br>
+    <input type="text" id="api_key_input">
+    <br>
+    <button type="button" id="update_conf_button">确定</button>
+  </form>
+  <br>
+  <h3>当前配置：</h3>
+  <span>翻译接口：</span>
+  <span id="current-engine"></span>
+  <br>
+  <span>API key：</span>
+  <br>
+  <span id="current-apikey"></span>
   <script src="popup.js"></script>
 </body>
 </html>
