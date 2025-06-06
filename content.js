@@ -81,6 +81,7 @@ function getBase64FromImg(img) {
     });
 }
 
+
 function init() {
     const imgs = document.querySelectorAll('img')
     imgs.forEach(img => createTranslateButton(img))
