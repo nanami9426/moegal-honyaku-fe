@@ -11,7 +11,7 @@
     <header class="hero">
       <p class="badge">Moegal Honyaku</p>
       <h1>翻译配置</h1>
-      <p class="hero-text">可切换翻译供应商与翻译模式，改动会实时同步到后端。</p>
+      <p class="hero-text">切换翻译供应商与模式，改动会实时同步到后端。</p>
     </header>
 
     <section class="form-card">
@@ -46,8 +46,37 @@
       </div>
     </section>
 
+    <section class="bg-card" aria-live="polite">
+      <label class="field" for="bg-file-input">
+        <span class="field-label">自定义背景</span>
+        <input class="field-input file-input" id="bg-file-input" type="file" accept="image/*">
+      </label>
+      <div class="bg-actions">
+        <button type="button" id="clear-bg-button" class="ghost-btn">清除背景</button>
+      </div>
+      <p class="bg-tip" id="bg-tip">未设置背景</p>
+    </section>
+
     <button type="button" id="reload-conf-button" class="sync-btn">重新拉取配置</button>
   </main>
+
+  <section class="cropper-overlay" id="bg-cropper-overlay" hidden>
+    <div class="cropper-dialog" role="dialog" aria-modal="true" aria-labelledby="bg-cropper-title">
+      <h2 id="bg-cropper-title">裁剪背景</h2>
+      <p class="cropper-desc" id="bg-cropper-desc">裁剪比例与 popup 大小一致。</p>
+      <div class="cropper-viewport" id="bg-cropper-viewport">
+        <canvas id="bg-cropper-canvas"></canvas>
+      </div>
+      <label class="field cropper-zoom-field" for="bg-cropper-zoom">
+        <span class="field-label">缩放</span>
+        <input class="cropper-zoom" id="bg-cropper-zoom" type="range" min="0" max="1000" value="0">
+      </label>
+      <div class="cropper-actions">
+        <button type="button" id="bg-cropper-cancel" class="ghost-btn">取消</button>
+        <button type="button" id="bg-cropper-confirm" class="sync-btn cropper-confirm-btn">应用裁剪</button>
+      </div>
+    </div>
+  </section>
 
   <script src="popup.js"></script>
 </body>
