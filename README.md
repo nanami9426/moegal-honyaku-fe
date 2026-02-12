@@ -2,7 +2,7 @@
 
 一个给网页漫画图一键翻译的浏览器插件。
 
-![](./example.png)
+<img src="./example.png" style="zoom: 55%;" />
 
 ## 这个插件能做什么
 
