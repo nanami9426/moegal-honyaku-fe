@@ -2,6 +2,8 @@
 
 一个给网页漫画图一键翻译的浏览器插件。
 
+![](C:\Users\48955\vv\moegal\moegal-honyaku-fe\example.png)
+
 ## 这个插件能做什么
 
 - 鼠标放到图片上，点“翻译图片”
