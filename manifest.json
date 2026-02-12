@@ -3,7 +3,7 @@
     "name": "Moegal Honyaku FE",
     "version": "1.0",
     "description": "This is the frontend script of the Moegal Honyaku project.",
-    "permissions": ["scripting", "activeTab", "storage"],
+    "permissions": ["scripting", "activeTab"],
     "host_permissions": ["<all_urls>"],
     "content_scripts": [
       {

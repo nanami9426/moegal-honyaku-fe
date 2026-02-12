@@ -1,29 +1,54 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <link rel="stylesheet" href="styles.css">
-    <title>Moegal Honyaku</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Moegal Honyaku</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <h3>Moegal Honyaku</h3>
-  <br><br>
-  <form>
-    <label for="translate_engine">选择翻译接口：</label>
-    <select id="translate_engine">
-      <option value="ernie">ernie</option>
-      <option value="openai">openai</option>
-    </select>
-    <br>
-    <button type="button" id="update_conf_button">确定</button>
-  </form>
-  <br>
-  <h3>当前配置：</h3>
-  <span>翻译接口：</span>
-  <span id="current-engine"></span>
-  <br>
+  <main class="panel">
+    <header class="hero">
+      <p class="badge">Moegal Honyaku</p>
+      <h1>翻译配置</h1>
+      <p class="hero-text">可切换翻译供应商与翻译模式，改动会实时同步到后端。</p>
+    </header>
+
+    <section class="form-card">
+      <label class="field" for="provider-select">
+        <span class="field-label">翻译供应商</span>
+        <select class="field-input" id="provider-select"></select>
+      </label>
+      <label class="field" for="mode-select">
+        <span class="field-label">翻译模式</span>
+        <select class="field-input" id="mode-select"></select>
+      </label>
+      <p class="mode-tip" id="mode-tip">parallel：逐句并发翻译，适合长文本分段处理。</p>
+      <p class="error-tip" id="error-tip" hidden></p>
+    </section>
+
+    <section class="conf-card" aria-live="polite">
+      <div class="conf-item">
+        <span class="label">当前翻译服务</span>
+        <span class="value" id="current-engine">OpenAI</span>
+      </div>
+      <div class="conf-item">
+        <span class="label">当前翻译模式</span>
+        <span class="value" id="current-mode">parallel</span>
+      </div>
+      <div class="conf-item">
+        <span class="label">同步状态</span>
+        <span class="status is-idle" id="sync-status">就绪</span>
+      </div>
+      <div class="conf-item">
+        <span class="label">最近同步时间</span>
+        <span class="value value-secondary" id="last-sync">未同步</span>
+      </div>
+    </section>
+
+    <button type="button" id="reload-conf-button" class="sync-btn">重新拉取配置</button>
+  </main>
+
   <script src="popup.js"></script>
 </body>
 </html>
-
-

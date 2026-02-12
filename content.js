@@ -43,8 +43,20 @@ function createTranslateButton(img) {
                     referer: baseUrl
                 })
             })
-            if (!response.ok) throw new Error("请求失败")
-            const result = await response.json()
+            let result = null
+            try {
+                result = await response.json()
+            } catch (e) {
+                result = null
+            }
+            if (!response.ok) {
+                const errorMessage =
+                    result?.detail ||
+                    result?.info ||
+                    result?.message ||
+                    `请求失败 (${response.status})`
+                throw new Error(errorMessage)
+            }
             console.log("-------------------------------------")
             console.log(`耗时：${result.duration}，花费${result.price}`)
             console.log(`原句：${result.raw_text}`)
@@ -57,7 +69,12 @@ function createTranslateButton(img) {
             button.textContent = "翻译完成"
         } catch (e) {
             console.error("翻译失败:", e)
-            button.textContent = "翻译失败"
+            const errorMessage = e?.message || ""
+            if (/structured|格式|数量|不匹配|列表|list/i.test(errorMessage)) {
+                button.textContent = "请重试/切并行"
+            } else {
+                button.textContent = "翻译失败"
+            }
         }
         setTimeout(() => {
             button.textContent = "翻译图片"
