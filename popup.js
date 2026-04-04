@@ -1,10 +1,16 @@
-const API_BASE = "http://127.0.0.1:8000"
+const DEFAULT_API_BASE = "http://127.0.0.1:8000"
+const API_BASE_STORAGE_KEY = "api_base_url"
 const DEFAULT_OPTIONS = {
   translate_api_type: ["openai", "dashscope"],
   translate_mode: ["parallel", "structured"],
 }
+const AUTO_SAVE_IMAGE_KEY = "auto_save_image_enabled"
+const BASE64_UPLOAD_KEY = "base64_upload_enabled"
+
+let API_BASE = DEFAULT_API_BASE
 const BG_STORAGE_KEY = "popup_custom_background"
 const CONF_STORAGE_KEY = "popup_last_translate_conf"
+const AUTO_TRANSLATE_KEY = "auto_translate_enabled"
 const CROP_ZOOM_STEPS = 1000
 const BG_EXPORT_MAX_EDGE = 1600
 const BG_EXPORT_MAX_PIXELS = 1_600_000
@@ -74,6 +80,12 @@ const view = {
   cropperZoom: null,
   cropperCancel: null,
   cropperConfirm: null,
+  autoTranslateToggle: null,
+  autoSaveImageToggle: null,
+  base64UploadToggle: null,
+  apiBaseInput: null,
+  saveApiButton: null,
+  apiTip: null,
 }
 
 function clamp(value, min, max) {
@@ -208,6 +220,195 @@ function loadBackground() {
     console.error("背景读取失败:", error)
     setBackgroundTip("读取本地背景失败。", true)
     applyBackground("")
+  }
+}
+
+async function loadApiBase() {
+  try {
+    const result = await chrome.storage.local.get(API_BASE_STORAGE_KEY)
+    const savedBase = result[API_BASE_STORAGE_KEY]
+    if (savedBase && typeof savedBase === "string" && savedBase.trim()) {
+      API_BASE = savedBase.trim()
+      view.apiBaseInput.value = API_BASE
+      setApiTip(`当前: ${API_BASE}`, false)
+    } else {
+      API_BASE = DEFAULT_API_BASE
+      view.apiBaseInput.value = ""
+      setApiTip(`默认: ${DEFAULT_API_BASE}`, false)
+    }
+  } catch (error) {
+    console.error("读取API地址失败:", error)
+    API_BASE = DEFAULT_API_BASE
+    setApiTip("读取失败，使用默认地址。", true)
+  }
+}
+
+function setApiTip(text, isError) {
+  const message = typeof text === "string" ? text.trim() : ""
+  view.apiTip.textContent = message
+  view.apiTip.className = isError ? "api-tip is-error" : "api-tip"
+}
+
+async function saveApiBase() {
+  const input = view.apiBaseInput.value.trim()
+  let newBase = input || DEFAULT_API_BASE
+
+  // 简单验证 URL 格式
+  try {
+    const url = new URL(newBase)
+    if (!url.protocol.startsWith("http")) {
+      throw new Error("仅支持 http/https 协议")
+    }
+  } catch (error) {
+    setApiTip(`地址格式错误: ${error.message}`, true)
+    return
+  }
+
+  try {
+    await chrome.storage.local.set({ [API_BASE_STORAGE_KEY]: newBase })
+    API_BASE = newBase
+    setApiTip(`已保存: ${newBase}`, false)
+
+    // 通知所有标签页更新 API 地址
+    const tabs = await chrome.tabs.query({})
+    for (const tab of tabs) {
+      if (tab.id) {
+        try {
+          await chrome.tabs.sendMessage(tab.id, {
+            type: "API_BASE_UPDATED",
+            apiBase: newBase
+          })
+        } catch (e) {
+          // 忽略无法发送的标签页
+        }
+      }
+    }
+  } catch (error) {
+    console.error("保存API地址失败:", error)
+    setApiTip("保存失败，请重试。", true)
+  }
+}
+
+async function loadAutoTranslateState() {
+  try {
+    const result = await chrome.storage.local.get(AUTO_TRANSLATE_KEY)
+    const enabled = result[AUTO_TRANSLATE_KEY] === true
+    view.autoTranslateToggle.checked = enabled
+  } catch (error) {
+    console.error("读取自动翻译状态失败:", error)
+    view.autoTranslateToggle.checked = false
+  }
+}
+
+async function loadAutoSaveImageState() {
+  try {
+    const result = await chrome.storage.local.get(AUTO_SAVE_IMAGE_KEY)
+    const enabled = result[AUTO_SAVE_IMAGE_KEY] === true
+    view.autoSaveImageToggle.checked = enabled
+  } catch (error) {
+    console.error("读取自动保存图片状态失败:", error)
+    view.autoSaveImageToggle.checked = false
+  }
+}
+
+async function loadBase64UploadState() {
+  try {
+    const result = await chrome.storage.local.get(BASE64_UPLOAD_KEY)
+    const enabled = result[BASE64_UPLOAD_KEY] === true
+    view.base64UploadToggle.checked = enabled
+  } catch (error) {
+    console.error("读取Base64上传状态失败:", error)
+    view.base64UploadToggle.checked = false
+  }
+}
+
+async function saveAutoTranslateState(enabled) {
+  try {
+    await chrome.storage.local.set({ [AUTO_TRANSLATE_KEY]: enabled })
+  } catch (error) {
+    console.error("保存自动翻译状态失败:", error)
+  }
+}
+
+async function saveAutoSaveImageState(enabled) {
+  try {
+    await chrome.storage.local.set({ [AUTO_SAVE_IMAGE_KEY]: enabled })
+  } catch (error) {
+    console.error("保存自动保存图片状态失败:", error)
+  }
+}
+
+async function saveBase64UploadState(enabled) {
+  try {
+    await chrome.storage.local.set({ [BASE64_UPLOAD_KEY]: enabled })
+  } catch (error) {
+    console.error("保存Base64上传状态失败:", error)
+  }
+}
+
+async function onAutoTranslateChange(event) {
+  const enabled = event.target.checked
+  await saveAutoTranslateState(enabled)
+  
+  // 通知当前标签页的 content script
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true })
+    if (tab?.id) {
+      await chrome.tabs.sendMessage(tab.id, {
+        type: "AUTO_TRANSLATE_TOGGLE",
+        enabled: enabled
+      })
+    }
+  } catch (error) {
+    console.error("通知content script失败:", error)
+  }
+}
+
+async function onAutoSaveImageChange(event) {
+  const enabled = event.target.checked
+  await saveAutoSaveImageState(enabled)
+  
+  // 通知所有标签页的 content script
+  try {
+    const tabs = await chrome.tabs.query({})
+    for (const tab of tabs) {
+      if (tab.id) {
+        try {
+          await chrome.tabs.sendMessage(tab.id, {
+            type: "AUTO_SAVE_IMAGE_TOGGLE",
+            enabled: enabled
+          })
+        } catch (e) {
+          // 忽略无法发送的标签页
+        }
+      }
+    }
+  } catch (error) {
+    console.error("通知content script失败:", error)
+  }
+}
+
+async function onBase64UploadChange(event) {
+  const enabled = event.target.checked
+  await saveBase64UploadState(enabled)
+  
+  // 通知所有标签页的 content script
+  try {
+    const tabs = await chrome.tabs.query({})
+    for (const tab of tabs) {
+      if (tab.id) {
+        try {
+          await chrome.tabs.sendMessage(tab.id, {
+            type: "BASE64_UPLOAD_TOGGLE",
+            enabled: enabled
+          })
+        } catch (e) {
+          // 忽略无法发送的标签页
+        }
+      }
+    }
+  } catch (error) {
+    console.error("通知content script失败:", error)
   }
 }
 
@@ -603,7 +804,13 @@ function errorMessage(response, payload) {
 }
 
 async function requestJSON(path, options) {
-  const response = await fetch(`${API_BASE}${path}`, options)
+  const headers = {
+    "ngrok-skip-browser-warning": "true",
+    ...(options?.headers || {}),
+  }
+  // Remove trailing slash from API_BASE to avoid double slashes
+  const baseUrl = API_BASE.replace(/\/+$/, "")
+  const response = await fetch(`${baseUrl}${path}`, { ...options, headers })
   let payload = null
   try {
     payload = await response.json()
@@ -768,6 +975,12 @@ function bindEvents() {
   view.reloadButton.addEventListener("click", async () => {
     await syncConfig()
   })
+  view.saveApiButton.addEventListener("click", saveApiBase)
+  view.apiBaseInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      saveApiBase()
+    }
+  })
   view.bgFileInput.addEventListener("change", onBackgroundFileChange)
   view.clearBgButton.addEventListener("click", onBackgroundClear)
   view.cropperCancel.addEventListener("click", cancelCropper)
@@ -779,9 +992,12 @@ function bindEvents() {
   view.cropperViewport.addEventListener("pointercancel", onCropPointerEnd)
   view.cropperViewport.addEventListener("wheel", onCropWheel, { passive: false })
   window.addEventListener("keydown", onCropKeyDown)
+  view.autoTranslateToggle.addEventListener("change", onAutoTranslateChange)
+  view.autoSaveImageToggle.addEventListener("change", onAutoSaveImageChange)
+  view.base64UploadToggle.addEventListener("change", onBase64UploadChange)
 }
 
-function init() {
+async function init() {
   view.providerSelect = document.getElementById("provider-select")
   view.modeSelect = document.getElementById("mode-select")
   view.currentEngine = document.getElementById("current-engine")
@@ -801,6 +1017,12 @@ function init() {
   view.cropperZoom = document.getElementById("bg-cropper-zoom")
   view.cropperCancel = document.getElementById("bg-cropper-cancel")
   view.cropperConfirm = document.getElementById("bg-cropper-confirm")
+  view.autoTranslateToggle = document.getElementById("auto-translate-toggle")
+  view.autoSaveImageToggle = document.getElementById("auto-save-image-toggle")
+  view.base64UploadToggle = document.getElementById("base64-upload-toggle")
+  view.apiBaseInput = document.getElementById("api-base-input")
+  view.saveApiButton = document.getElementById("save-api-button")
+  view.apiTip = document.getElementById("api-tip")
 
   resetCropperState()
   hydrateCachedConfig()
@@ -811,6 +1033,10 @@ function init() {
   applyConfig(state.current)
   state.hydrating = false
   loadBackground()
+  loadAutoTranslateState()
+  loadAutoSaveImageState()
+  loadBase64UploadState()
+  await loadApiBase()
 
   bindEvents()
   syncConfig()

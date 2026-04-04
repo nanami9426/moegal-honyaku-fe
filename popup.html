@@ -14,6 +14,17 @@
       <p class="hero-text">切换翻译供应商与模式</p>
     </header>
 
+    <section class="form-card api-card">
+      <label class="field" for="api-base-input">
+        <span class="field-label">API 服务器地址</span>
+        <input class="field-input" id="api-base-input" type="text" placeholder="http://127.0.0.1:8000">
+      </label>
+      <div class="api-actions">
+        <button type="button" id="save-api-button" class="ghost-btn">保存地址</button>
+      </div>
+      <p class="api-tip" id="api-tip">默认: http://127.0.0.1:8000</p>
+    </section>
+
     <section class="form-card">
       <label class="field" for="provider-select">
         <span class="field-label">翻译供应商</span>
@@ -25,6 +36,39 @@
       </label>
       <p class="mode-tip" id="mode-tip">parallel：逐句并发翻译，适合长文本分段处理。</p>
       <p class="error-tip" id="error-tip" hidden></p>
+    </section>
+
+    <section class="toggle-card">
+      <div class="toggle-item">
+        <div class="toggle-info">
+          <span class="toggle-label">自动翻译</span>
+          <span class="toggle-desc">开启后页面图片将自动翻译</span>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="auto-translate-toggle">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="toggle-item">
+        <div class="toggle-info">
+          <span class="toggle-label">自动保存图片</span>
+          <span class="toggle-desc">翻译后自动下载翻译结果图片</span>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="auto-save-image-toggle">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+      <div class="toggle-item">
+        <div class="toggle-info">
+          <span class="toggle-label">Base64上传</span>
+          <span class="toggle-desc">开启后图片转base64上传，服务器无需下载</span>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="base64-upload-toggle">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
     </section>
 
     <section class="conf-card" aria-live="polite">

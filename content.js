@@ -2,7 +2,14 @@ const EXCLUDED_IMAGE_KEYWORDS = /(avatar|icon|logo|emoji|emoticon|sprite|thumb|t
 const COMIC_IMAGE_HINT_KEYWORDS = /(comic|manga|manhua|manhwa|chapter|panel|page|raw)/i
 const CANVAS_INCLUDE_KEYWORDS = /(page|contents|reader|comic|manga|chapter|panel|slide)/i
 const CANVAS_EXCLUDE_KEYWORDS = /(chart|graph|avatar|icon|logo|video|editor|signature|captcha)/i
-const TRANSLATE_API_URL = "http://127.0.0.1:8000/api/v1/translate/web"
+const DEFAULT_API_BASE = "http://127.0.0.1:8000"
+const API_BASE_STORAGE_KEY = "api_base_url"
+const AUTO_TRANSLATE_KEY = "auto_translate_enabled"
+const AUTO_SAVE_IMAGE_KEY = "auto_save_image_enabled"
+const BASE64_UPLOAD_KEY = "base64_upload_enabled"
+
+let API_BASE = DEFAULT_API_BASE
+let TRANSLATE_API_URL = `${API_BASE.replace(/\/+$/, "")}/api/v1/translate/web`
 
 const MIN_RENDERED_WIDTH = 160
 const MIN_RENDERED_HEIGHT = 160
@@ -17,6 +24,13 @@ const BUTTON_RESET_DELAY = 2000
 
 const surfaceButtons = new WeakMap()
 const canvasOverlays = new WeakMap()
+const translatedSurfaces = new WeakSet()
+
+let autoTranslateEnabled = false
+let autoTranslateQueue = []
+let isProcessingQueue = false
+let autoSaveImageEnabled = false
+let base64UploadEnabled = true  // 默认开启 base64 上传
 
 function decodeSafe(text) {
     try {
@@ -233,13 +247,90 @@ function getCanvasImageBase64(canvas) {
     }
 }
 
-function getTranslatePayload(surface) {
+async function getImageBase64(img) {
+    const src = img.currentSrc || img.src
+    if (!src) {
+        throw new Error("图片地址为空")
+    }
+    
+    // 如果已经是 base64，直接返回
+    if (src.startsWith("data:image")) {
+        return src
+    }
+    
+    // 尝试使用 background script 获取图片（绑过 CORS）
+    try {
+        const response = await chrome.runtime.sendMessage({
+            type: "FETCH_IMAGE",
+            url: src,
+            referer: window.location.href
+        })
+        if (response.error) {
+            throw new Error(response.error)
+        }
+        if (response.base64) {
+            return response.base64
+        }
+    } catch (bgError) {
+        console.warn("Background fetch failed:", bgError)
+    }
+    
+    // 如果 background script 失败，尝试直接 fetch
+    try {
+        const response = await fetch(src, {
+            mode: "cors",
+            credentials: "omit",
+        })
+        if (!response.ok) {
+            throw new Error(`图片获取失败: ${response.status}`)
+        }
+        const blob = await response.blob()
+        // 转换为 PNG 格式
+        return new Promise((resolve, reject) => {
+            const tempImg = new Image()
+            tempImg.onload = () => {
+                const canvas = document.createElement("canvas")
+                canvas.width = tempImg.width
+                canvas.height = tempImg.height
+                const ctx = canvas.getContext("2d")
+                ctx.drawImage(tempImg, 0, 0)
+                resolve(canvas.toDataURL("image/png"))
+            }
+            tempImg.onerror = () => reject(new Error("图片加载失败"))
+            tempImg.src = URL.createObjectURL(blob)
+        })
+    } catch (fetchError) {
+        // 如果 fetch 失败（可能是 CORS），尝试使用 canvas 方式
+        try {
+            const canvas = document.createElement("canvas")
+            canvas.width = img.naturalWidth
+            canvas.height = img.naturalHeight
+            const ctx = canvas.getContext("2d")
+            ctx.drawImage(img, 0, 0)
+            return canvas.toDataURL("image/png")
+        } catch (canvasError) {
+            throw new Error("无法获取图片数据，可能是跨域限制")
+        }
+    }
+}
+
+async function getTranslatePayload(surface) {
     const referer = buildRefererBaseUrl()
     if (surface instanceof HTMLImageElement) {
-        return {
-            image_url: surface.currentSrc || surface.src,
-            referer,
-            source_type: "img",
+        // 根据开关决定使用 URL 还是 base64
+        if (base64UploadEnabled) {
+            const imageBase64 = await getImageBase64(surface)
+            return {
+                image_base64: imageBase64,
+                referer,
+                source_type: "img",
+            }
+        } else {
+            return {
+                image_url: surface.currentSrc || surface.src,
+                referer,
+                source_type: "img",
+            }
         }
     }
 
@@ -339,13 +430,42 @@ function applyTranslatedResult(surface, translatedDataUrl) {
     }
 }
 
+function downloadTranslatedImage(translatedDataUrl, sourceUrl) {
+    try {
+        const link = document.createElement("a")
+        link.href = translatedDataUrl
+        // 从原图片URL提取文件名，或使用默认名
+        let filename = "translated_image.png"
+        if (sourceUrl) {
+            try {
+                const urlPath = new URL(sourceUrl).pathname
+                const originalName = urlPath.split("/").pop()
+                if (originalName && originalName.includes(".")) {
+                    const nameWithoutExt = originalName.replace(/\.[^.]+$/, "")
+                    filename = `${nameWithoutExt}_translated.png`
+                }
+            } catch (e) {
+                // URL解析失败，使用默认文件名
+            }
+        }
+        link.download = filename
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+    } catch (error) {
+        console.error("保存图片失败:", error)
+    }
+}
+
 async function requestTranslation(surface) {
+    const payload = await getTranslatePayload(surface)
     const response = await fetch(TRANSLATE_API_URL, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
+            "ngrok-skip-browser-warning": "true",
         },
-        body: JSON.stringify(getTranslatePayload(surface)),
+        body: JSON.stringify(payload),
     })
 
     let result = null
@@ -442,6 +562,11 @@ function createTranslateButton(surface) {
             const result = await requestTranslation(surface)
             const translatedDataUrl = "data:image/png;base64," + result.res_img
             applyTranslatedResult(surface, translatedDataUrl)
+            // 自动保存图片
+            if (autoSaveImageEnabled) {
+                const sourceUrl = surface instanceof HTMLImageElement ? (surface.currentSrc || surface.src) : null
+                downloadTranslatedImage(translatedDataUrl, sourceUrl)
+            }
             button.textContent = "翻译完成"
         } catch (error) {
             console.error("翻译失败:", error)
@@ -461,21 +586,146 @@ function createTranslateButton(surface) {
     })
 }
 
-function init() {
-    const surfaces = document.querySelectorAll("img, canvas")
-    surfaces.forEach((surface) => createTranslateButton(surface))
+async function init() {
+  await loadApiBase()
+  const surfaces = document.querySelectorAll("img, canvas")
+  surfaces.forEach((surface) => createTranslateButton(surface))
 }
-
 function handleAddedNode(node) {
     if (!(node instanceof Element)) return
 
     if (node instanceof HTMLImageElement || node instanceof HTMLCanvasElement) {
         createTranslateButton(node)
+        addToAutoTranslateQueue(node)
     }
 
     const surfaces = node.querySelectorAll?.("img, canvas")
-    surfaces?.forEach((surface) => createTranslateButton(surface))
+    surfaces?.forEach((surface) => {
+        createTranslateButton(surface)
+        addToAutoTranslateQueue(surface)
+    })
 }
+
+// 自动翻译相关函数
+async function loadApiBase() {
+  try {
+    const result = await chrome.storage.local.get(API_BASE_STORAGE_KEY)
+    const savedBase = result[API_BASE_STORAGE_KEY]
+    if (savedBase && typeof savedBase === "string" && savedBase.trim()) {
+      API_BASE = savedBase.trim()
+    } else {
+      API_BASE = DEFAULT_API_BASE
+    }
+    TRANSLATE_API_URL = `${API_BASE.replace(/\/+$/, "")}/api/v1/translate/web`
+  } catch (error) {
+    console.error("读取API地址失败:", error)
+    API_BASE = DEFAULT_API_BASE
+    TRANSLATE_API_URL = `${API_BASE.replace(/\/+$/, "")}/api/v1/translate/web`
+  }
+}
+
+async function loadAutoTranslateState() {
+    try {
+        const result = await chrome.storage.local.get([AUTO_TRANSLATE_KEY, AUTO_SAVE_IMAGE_KEY, BASE64_UPLOAD_KEY])
+        autoTranslateEnabled = result[AUTO_TRANSLATE_KEY] === true
+        autoSaveImageEnabled = result[AUTO_SAVE_IMAGE_KEY] === true
+        base64UploadEnabled = result[BASE64_UPLOAD_KEY] !== false  // 默认开启，只有明确设为 false 才关闭
+        if (autoTranslateEnabled) {
+            startAutoTranslate()
+        }
+    } catch (error) {
+        console.error("读取自动翻译状态失败:", error)
+    }
+}
+
+function startAutoTranslate() {
+    autoTranslateQueue = []
+    const surfaces = document.querySelectorAll("img, canvas")
+    surfaces.forEach((surface) => {
+        if (isTranslatableSurface(surface) && !translatedSurfaces.has(surface)) {
+            autoTranslateQueue.push(surface)
+        }
+    })
+    processAutoTranslateQueue()
+}
+
+function stopAutoTranslate() {
+    autoTranslateQueue = []
+}
+
+async function processAutoTranslateQueue() {
+    if (isProcessingQueue || !autoTranslateEnabled) return
+    if (autoTranslateQueue.length === 0) return
+
+    isProcessingQueue = true
+
+    while (autoTranslateQueue.length > 0 && autoTranslateEnabled) {
+        const surface = autoTranslateQueue.shift()
+        
+        if (!surface.isConnected || translatedSurfaces.has(surface)) {
+            continue
+        }
+
+        if (!isTranslatableSurface(surface)) {
+            continue
+        }
+
+        try {
+            const result = await requestTranslation(surface)
+            const translatedDataUrl = "data:image/png;base64," + result.res_img
+            applyTranslatedResult(surface, translatedDataUrl)
+            translatedSurfaces.add(surface)
+            // 自动保存图片
+            if (autoSaveImageEnabled) {
+                const sourceUrl = surface instanceof HTMLImageElement ? (surface.currentSrc || surface.src) : null
+                downloadTranslatedImage(translatedDataUrl, sourceUrl)
+            }
+        } catch (error) {
+            console.error("自动翻译失败:", error)
+        }
+    }
+
+    isProcessingQueue = false
+}
+
+function addToAutoTranslateQueue(surface) {
+    if (!autoTranslateEnabled) return
+    if (!isTranslatableSurface(surface)) return
+    if (translatedSurfaces.has(surface)) return
+    if (autoTranslateQueue.includes(surface)) return
+    
+    autoTranslateQueue.push(surface)
+    processAutoTranslateQueue()
+}
+
+// 监听来自 popup 的消息
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === "AUTO_TRANSLATE_TOGGLE") {
+        autoTranslateEnabled = message.enabled
+        if (autoTranslateEnabled) {
+            startAutoTranslate()
+        } else {
+            stopAutoTranslate()
+        }
+    }
+    if (message.type === "AUTO_SAVE_IMAGE_TOGGLE") {
+        autoSaveImageEnabled = message.enabled
+    }
+    if (message.type === "BASE64_UPLOAD_TOGGLE") {
+        base64UploadEnabled = message.enabled
+        console.log("Base64上传模式已", message.enabled ? "开启" : "关闭")
+    }
+    if (message.type === "API_BASE_UPDATED") {
+        API_BASE = message.apiBase || DEFAULT_API_BASE
+        TRANSLATE_API_URL = `${API_BASE.replace(/\/+$/, "")}/api/v1/translate/web`
+        console.log("API地址已更新:", API_BASE)
+        // 如果自动翻译已开启，重新启动以确保使用新API地址
+        if (autoTranslateEnabled) {
+            stopAutoTranslate()
+            startAutoTranslate()
+        }
+    }
+})
 
 const observer = new MutationObserver((mutations) => {
     mutations.forEach((mutation) => {
@@ -486,3 +736,4 @@ const observer = new MutationObserver((mutations) => {
 observer.observe(document.body, { childList: true, subtree: true })
 
 init()
+loadAutoTranslateState()
