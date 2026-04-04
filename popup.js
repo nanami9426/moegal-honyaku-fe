@@ -5,6 +5,9 @@ const DEFAULT_OPTIONS = {
 }
 const BG_STORAGE_KEY = "popup_custom_background"
 const CONF_STORAGE_KEY = "popup_last_translate_conf"
+const TEXT_DIRECTION_STORAGE_KEY = "translate_text_direction"
+const DEFAULT_TEXT_DIRECTION = "horizontal"
+const TEXT_DIRECTION_OPTIONS = ["horizontal", "vertical"]
 const CROP_ZOOM_STEPS = 1000
 const BG_EXPORT_MAX_EDGE = 1600
 const BG_EXPORT_MAX_PIXELS = 1_600_000
@@ -24,11 +27,24 @@ const MODE_DESC = {
   structured: "structured：一次请求完成整组翻译，适合需要统一上下文的场景。",
 }
 
+const TEXT_DIRECTION_LABEL = {
+  horizontal: "横排",
+  vertical: "竖排",
+}
+
+const TEXT_DIRECTION_DESC = {
+  horizontal: "横排：使用当前默认布局，适合大多数气泡回填。",
+  vertical: "竖排：按自上而下、列从右到左的方式回填文字。",
+}
+
 const state = {
   options: { ...DEFAULT_OPTIONS },
   current: {
     translate_api_type: "openai",
     translate_mode: "parallel",
+  },
+  local: {
+    text_direction: DEFAULT_TEXT_DIRECTION,
   },
   hydrating: false,
   cropper: {
@@ -57,9 +73,12 @@ const state = {
 const view = {
   providerSelect: null,
   modeSelect: null,
+  directionSelect: null,
   currentEngine: null,
   currentMode: null,
+  currentDirection: null,
   modeTip: null,
+  directionTip: null,
   errorTip: null,
   syncStatus: null,
   lastSync: null,
@@ -128,6 +147,55 @@ function modeTip(value) {
   return MODE_DESC[value] || "可选择并行或结构化翻译模式。"
 }
 
+function textDirectionLabel(value) {
+  return TEXT_DIRECTION_LABEL[value] || TEXT_DIRECTION_LABEL[DEFAULT_TEXT_DIRECTION]
+}
+
+function textDirectionTip(value) {
+  return TEXT_DIRECTION_DESC[value] || TEXT_DIRECTION_DESC[DEFAULT_TEXT_DIRECTION]
+}
+
+function normalizeTextDirection(value) {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : ""
+  return TEXT_DIRECTION_OPTIONS.includes(normalized) ? normalized : DEFAULT_TEXT_DIRECTION
+}
+
+function getExtensionStorageArea() {
+  return globalThis.chrome?.storage?.local || null
+}
+
+async function readStoredTextDirection() {
+  const storage = getExtensionStorageArea()
+  if (!storage) return DEFAULT_TEXT_DIRECTION
+
+  return new Promise((resolve) => {
+    storage.get({ [TEXT_DIRECTION_STORAGE_KEY]: DEFAULT_TEXT_DIRECTION }, (result) => {
+      if (globalThis.chrome?.runtime?.lastError) {
+        console.error("文字方向读取失败:", globalThis.chrome.runtime.lastError)
+        resolve(DEFAULT_TEXT_DIRECTION)
+        return
+      }
+      resolve(normalizeTextDirection(result?.[TEXT_DIRECTION_STORAGE_KEY]))
+    })
+  })
+}
+
+async function writeStoredTextDirection(value) {
+  const storage = getExtensionStorageArea()
+  if (!storage) return false
+
+  return new Promise((resolve) => {
+    storage.set({ [TEXT_DIRECTION_STORAGE_KEY]: normalizeTextDirection(value) }, () => {
+      if (globalThis.chrome?.runtime?.lastError) {
+        console.error("文字方向保存失败:", globalThis.chrome.runtime.lastError)
+        resolve(false)
+        return
+      }
+      resolve(true)
+    })
+  })
+}
+
 function setStatus(text, className) {
   view.syncStatus.textContent = text
   view.syncStatus.className = `status ${className}`
@@ -143,6 +211,21 @@ function setBackgroundTip(text, isError) {
   const message = typeof text === "string" ? text.trim() : ""
   view.bgTip.textContent = message || "未设置背景"
   view.bgTip.className = isError ? "bg-tip is-error" : "bg-tip"
+}
+
+function renderCurrent() {
+  view.currentEngine.textContent = providerLabel(state.current.translate_api_type)
+  view.currentMode.textContent = modeLabel(state.current.translate_mode)
+  view.currentDirection.textContent = textDirectionLabel(state.local.text_direction)
+  view.modeTip.textContent = modeTip(state.current.translate_mode)
+  view.directionTip.textContent = textDirectionTip(state.local.text_direction)
+}
+
+function applyTextDirection(value) {
+  const nextDirection = normalizeTextDirection(value)
+  state.local.text_direction = nextDirection
+  view.directionSelect.value = nextDirection
+  renderCurrent()
 }
 
 function applyBackground(dataUrl) {
@@ -587,6 +670,7 @@ function onBackgroundClear() {
 function setLoading(loading, loadingText) {
   view.providerSelect.disabled = loading
   view.modeSelect.disabled = loading
+  view.directionSelect.disabled = loading
   view.reloadButton.disabled = loading
   view.reloadButton.textContent = loading ? loadingText : "重新拉取配置"
 }
@@ -671,12 +755,6 @@ function ensureOption(select, value, text) {
   select.appendChild(option)
 }
 
-function renderCurrent() {
-  view.currentEngine.textContent = providerLabel(state.current.translate_api_type)
-  view.currentMode.textContent = modeLabel(state.current.translate_mode)
-  view.modeTip.textContent = modeTip(state.current.translate_mode)
-}
-
 function applyConfig(conf) {
   const nextProvider = typeof conf?.translate_api_type === "string" ? conf.translate_api_type : "openai"
   const nextMode = typeof conf?.translate_mode === "string" ? conf.translate_mode : "parallel"
@@ -691,6 +769,10 @@ function applyConfig(conf) {
   view.modeSelect.value = nextMode
   renderCurrent()
   persistCurrentConfig()
+}
+
+async function hydrateTextDirection() {
+  applyTextDirection(await readStoredTextDirection())
 }
 
 async function syncConfig() {
@@ -758,12 +840,32 @@ async function onConfigChange(attr, value) {
   }
 }
 
+async function onTextDirectionChange(value) {
+  if (state.hydrating) return
+
+  const oldValue = state.local.text_direction
+  const nextValue = normalizeTextDirection(value)
+  if (oldValue === nextValue) return
+
+  setError("")
+  applyTextDirection(nextValue)
+
+  const saved = await writeStoredTextDirection(nextValue)
+  if (saved) return
+
+  applyTextDirection(oldValue)
+  setError("文字方向保存失败，请重试。")
+}
+
 function bindEvents() {
   view.providerSelect.addEventListener("change", async (event) => {
     await onConfigChange("translate_api_type", event.target.value)
   })
   view.modeSelect.addEventListener("change", async (event) => {
     await onConfigChange("translate_mode", event.target.value)
+  })
+  view.directionSelect.addEventListener("change", async (event) => {
+    await onTextDirectionChange(event.target.value)
   })
   view.reloadButton.addEventListener("click", async () => {
     await syncConfig()
@@ -781,12 +883,15 @@ function bindEvents() {
   window.addEventListener("keydown", onCropKeyDown)
 }
 
-function init() {
+async function init() {
   view.providerSelect = document.getElementById("provider-select")
   view.modeSelect = document.getElementById("mode-select")
+  view.directionSelect = document.getElementById("direction-select")
   view.currentEngine = document.getElementById("current-engine")
   view.currentMode = document.getElementById("current-mode")
+  view.currentDirection = document.getElementById("current-direction")
   view.modeTip = document.getElementById("mode-tip")
+  view.directionTip = document.getElementById("direction-tip")
   view.errorTip = document.getElementById("error-tip")
   view.syncStatus = document.getElementById("sync-status")
   view.lastSync = document.getElementById("last-sync")
@@ -808,7 +913,9 @@ function init() {
   state.hydrating = true
   renderSelect(view.providerSelect, state.options.translate_api_type, providerLabel)
   renderSelect(view.modeSelect, state.options.translate_mode, modeLabel)
+  renderSelect(view.directionSelect, TEXT_DIRECTION_OPTIONS, textDirectionLabel)
   applyConfig(state.current)
+  await hydrateTextDirection()
   state.hydrating = false
   loadBackground()
 
@@ -816,4 +923,4 @@ function init() {
   syncConfig()
 }
 
-init()
+void init()

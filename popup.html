@@ -11,7 +11,7 @@
     <header class="hero">
       <p class="badge">Moegal Honyaku</p>
       <h1>翻译配置</h1>
-      <p class="hero-text">切换翻译供应商与模式</p>
+      <p class="hero-text">切换翻译供应商、模式与文字方向</p>
     </header>
 
     <section class="form-card">
@@ -23,7 +23,12 @@
         <span class="field-label">翻译模式</span>
         <select class="field-input" id="mode-select"></select>
       </label>
+      <label class="field" for="direction-select">
+        <span class="field-label">文字方向</span>
+        <select class="field-input" id="direction-select"></select>
+      </label>
       <p class="mode-tip" id="mode-tip">parallel：逐句并发翻译，适合长文本分段处理。</p>
+      <p class="mode-tip" id="direction-tip">横排：使用当前默认布局，适合大多数气泡回填。</p>
       <p class="error-tip" id="error-tip" hidden></p>
     </section>
 
@@ -35,6 +40,10 @@
       <div class="conf-item">
         <span class="label">当前翻译模式</span>
         <span class="value" id="current-mode">parallel</span>
+      </div>
+      <div class="conf-item">
+        <span class="label">当前文字排版</span>
+        <span class="value" id="current-direction">横排</span>
       </div>
       <div class="conf-item">
         <span class="label">同步状态</span>

@@ -3,6 +3,9 @@ const COMIC_IMAGE_HINT_KEYWORDS = /(comic|manga|manhua|manhwa|chapter|panel|page
 const CANVAS_INCLUDE_KEYWORDS = /(page|contents|reader|comic|manga|chapter|panel|slide)/i
 const CANVAS_EXCLUDE_KEYWORDS = /(chart|graph|avatar|icon|logo|video|editor|signature|captcha)/i
 const TRANSLATE_API_URL = "http://127.0.0.1:8000/api/v1/translate/web"
+const TEXT_DIRECTION_STORAGE_KEY = "translate_text_direction"
+const DEFAULT_TEXT_DIRECTION = "horizontal"
+const TEXT_DIRECTION_OPTIONS = ["horizontal", "vertical"]
 
 const MIN_RENDERED_WIDTH = 160
 const MIN_RENDERED_HEIGHT = 160
@@ -233,13 +236,36 @@ function getCanvasImageBase64(canvas) {
     }
 }
 
-function getTranslatePayload(surface) {
+function normalizeTextDirection(value) {
+    const normalized = typeof value === "string" ? value.trim().toLowerCase() : ""
+    return TEXT_DIRECTION_OPTIONS.includes(normalized) ? normalized : DEFAULT_TEXT_DIRECTION
+}
+
+async function readStoredTextDirection() {
+    const storage = globalThis.chrome?.storage?.local
+    if (!storage) return DEFAULT_TEXT_DIRECTION
+
+    return new Promise((resolve) => {
+        storage.get({ [TEXT_DIRECTION_STORAGE_KEY]: DEFAULT_TEXT_DIRECTION }, (result) => {
+            if (globalThis.chrome?.runtime?.lastError) {
+                console.error("读取文字方向失败:", globalThis.chrome.runtime.lastError)
+                resolve(DEFAULT_TEXT_DIRECTION)
+                return
+            }
+            resolve(normalizeTextDirection(result?.[TEXT_DIRECTION_STORAGE_KEY]))
+        })
+    })
+}
+
+async function getTranslatePayload(surface) {
     const referer = buildRefererBaseUrl()
+    const textDirection = await readStoredTextDirection()
     if (surface instanceof HTMLImageElement) {
         return {
             image_url: surface.currentSrc || surface.src,
             referer,
             source_type: "img",
+            text_direction: textDirection,
         }
     }
 
@@ -248,6 +274,7 @@ function getTranslatePayload(surface) {
             image_base64: getCanvasImageBase64(surface),
             referer,
             source_type: "canvas",
+            text_direction: textDirection,
         }
     }
 
@@ -340,12 +367,13 @@ function applyTranslatedResult(surface, translatedDataUrl) {
 }
 
 async function requestTranslation(surface) {
+    const payload = await getTranslatePayload(surface)
     const response = await fetch(TRANSLATE_API_URL, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
         },
-        body: JSON.stringify(getTranslatePayload(surface)),
+        body: JSON.stringify(payload),
     })
 
     let result = null
