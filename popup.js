@@ -1,6 +1,7 @@
 const API_BASE = "http://127.0.0.1:8000"
+const DEFAULT_PROVIDER = "custom"
 const DEFAULT_OPTIONS = {
-  translate_api_type: ["openai", "dashscope"],
+  translate_api_type: [DEFAULT_PROVIDER, "dashscope"],
   translate_mode: ["parallel", "structured"],
 }
 const BG_STORAGE_KEY = "popup_custom_background"
@@ -13,7 +14,7 @@ const BG_EXPORT_MAX_EDGE = 1600
 const BG_EXPORT_MAX_PIXELS = 1_600_000
 
 const PROVIDER_LABEL = {
-  openai: "OpenAI",
+  custom: "Custom",
   dashscope: "DashScope",
 }
 
@@ -40,9 +41,10 @@ const TEXT_DIRECTION_DESC = {
 const state = {
   options: { ...DEFAULT_OPTIONS },
   current: {
-    translate_api_type: "openai",
+    translate_api_type: DEFAULT_PROVIDER,
     translate_mode: "parallel",
   },
+  providerStatus: {},
   local: {
     text_direction: DEFAULT_TEXT_DIRECTION,
   },
@@ -139,6 +141,35 @@ function providerLabel(value) {
   return PROVIDER_LABEL[value] || value
 }
 
+function normalizeProviderValue(value, fallback = DEFAULT_PROVIDER) {
+  if (typeof value !== "string") return fallback
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return fallback
+  if (normalized === "openai") return DEFAULT_PROVIDER
+  return normalized
+}
+
+function normalizeProviderStatus(payload) {
+  if (!payload || typeof payload !== "object") return {}
+  const normalized = {}
+  Object.entries(payload).forEach(([provider, value]) => {
+    const key = normalizeProviderValue(provider, "")
+    if (!key) return
+    const item = value && typeof value === "object" ? value : {}
+    normalized[key] = {
+      configured: Boolean(item.configured),
+      message: typeof item.message === "string" ? item.message.trim() : "",
+    }
+  })
+  return normalized
+}
+
+function currentProviderStatusMessage() {
+  const info = state.providerStatus[normalizeProviderValue(state.current.translate_api_type, "")]
+  if (!info || info.configured) return ""
+  return info.message
+}
+
 function modeLabel(value) {
   return MODE_LABEL[value] || value
 }
@@ -219,6 +250,7 @@ function renderCurrent() {
   view.currentDirection.textContent = textDirectionLabel(state.local.text_direction)
   view.modeTip.textContent = modeTip(state.current.translate_mode)
   view.directionTip.textContent = textDirectionTip(state.local.text_direction)
+  setError(currentProviderStatusMessage())
 }
 
 function applyTextDirection(value) {
@@ -272,7 +304,7 @@ function hydrateCachedConfig() {
     if (!raw) return
     const parsed = JSON.parse(raw)
     if (typeof parsed?.translate_api_type === "string" && parsed.translate_api_type.trim()) {
-      state.current.translate_api_type = parsed.translate_api_type.trim()
+      state.current.translate_api_type = normalizeProviderValue(parsed.translate_api_type)
     }
     if (typeof parsed?.translate_mode === "string" && parsed.translate_mode.trim()) {
       state.current.translate_mode = parsed.translate_mode.trim()
@@ -727,7 +759,13 @@ function cleanValues(values) {
 }
 
 function normalizeOptions(payload) {
-  const providerOptions = cleanValues(payload?.translate_api_type)
+  const providerOptions = Array.from(
+    new Set(
+      cleanValues(payload?.translate_api_type)
+        .map((value) => normalizeProviderValue(value, ""))
+        .filter((value) => value.length > 0),
+    ),
+  )
   const modeOptions = cleanValues(payload?.translate_mode)
   return {
     translate_api_type: providerOptions.length > 0 ? providerOptions : [...DEFAULT_OPTIONS.translate_api_type],
@@ -756,11 +794,12 @@ function ensureOption(select, value, text) {
 }
 
 function applyConfig(conf) {
-  const nextProvider = typeof conf?.translate_api_type === "string" ? conf.translate_api_type : "openai"
+  const nextProvider = normalizeProviderValue(conf?.translate_api_type)
   const nextMode = typeof conf?.translate_mode === "string" ? conf.translate_mode : "parallel"
 
   state.current.translate_api_type = nextProvider
   state.current.translate_mode = nextMode
+  state.providerStatus = normalizeProviderStatus(conf?.provider_status)
 
   ensureOption(view.providerSelect, nextProvider, providerLabel(nextProvider))
   ensureOption(view.modeSelect, nextMode, modeLabel(nextMode))
@@ -819,10 +858,7 @@ async function onConfigChange(attr, value) {
   setError("")
 
   try {
-    await updateConf(attr, value)
-    state.current[attr] = value
-    renderCurrent()
-    persistCurrentConfig()
+    applyConfig(await updateConf(attr, value))
     view.lastSync.textContent = now()
     setStatus("保存成功", "is-ok")
   } catch (error) {

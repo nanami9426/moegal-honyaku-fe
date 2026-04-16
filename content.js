@@ -15,11 +15,13 @@ const MIN_NATURAL_HEIGHT = 260
 const MIN_ASPECT_RATIO = 0.28
 const MAX_ASPECT_RATIO = 3.5
 
-const BUTTON_HIDE_DELAY = 200
+const BUTTON_HIDE_DELAY = 800
 const BUTTON_RESET_DELAY = 2000
+const TOP_LAYER_Z_INDEX = 2147483647
 
 const surfaceButtons = new WeakMap()
 const canvasOverlays = new WeakMap()
+let buttonLayerRoot = null
 
 function decodeSafe(text) {
     try {
@@ -181,6 +183,34 @@ function clearHideTimer(state) {
     state.hideTimeout = 0
 }
 
+function ensureButtonLayerRoot() {
+    if (!buttonLayerRoot || !buttonLayerRoot.isConnected) {
+        const root = document.createElement("div")
+        root.className = "moegal-translate-button-layer"
+        root.setAttribute("aria-hidden", "true")
+        root.style.setProperty("display", "block", "important")
+        root.style.setProperty("position", "fixed", "important")
+        root.style.setProperty("top", "0", "important")
+        root.style.setProperty("left", "0", "important")
+        root.style.setProperty("width", "100vw", "important")
+        root.style.setProperty("height", "100vh", "important")
+        root.style.setProperty("overflow", "visible", "important")
+        root.style.setProperty("pointer-events", "none", "important")
+        root.style.setProperty("isolation", "isolate", "important")
+        root.style.setProperty("z-index", String(TOP_LAYER_Z_INDEX), "important")
+        const mountTarget = document.body || document.documentElement
+        mountTarget.appendChild(root)
+        buttonLayerRoot = root
+    }
+
+    const parent = buttonLayerRoot.parentElement
+    if (parent && parent.lastElementChild !== buttonLayerRoot) {
+        parent.appendChild(buttonLayerRoot)
+    }
+
+    return buttonLayerRoot
+}
+
 function scheduleButtonReset(state, delay = BUTTON_RESET_DELAY) {
     if (state.resetTimeout) {
         clearTimeout(state.resetTimeout)
@@ -212,6 +242,11 @@ function parseResponseError(result, response) {
         result?.message ||
         `请求失败 (${response.status})`
     )
+}
+
+function isMissingProviderConfigMessage(message) {
+    const text = typeof message === "string" ? message : String(message || "")
+    return /未配置|CUSTOM_API_KEY|DASHSCOPE_API_KEY|后端\s*\.env/i.test(text)
 }
 
 function logTranslateResult(result) {
@@ -408,10 +443,14 @@ function createTranslateButton(surface) {
     button.type = "button"
     button.textContent = "翻译图片"
     button.className = "translate-btn"
-    button.style.position = "absolute"
-    button.style.zIndex = 9999
-    button.style.display = "none"
-    document.body.appendChild(button)
+    button.style.setProperty("position", "fixed", "important")
+    button.style.setProperty("z-index", "1", "important")
+    button.style.setProperty("pointer-events", "auto", "important")
+    button.style.setProperty("display", "none", "important")
+    button.style.setProperty("writing-mode", "horizontal-tb", "important")
+    button.style.setProperty("text-orientation", "mixed", "important")
+    button.style.setProperty("white-space", "nowrap", "important")
+    ensureButtonLayerRoot().appendChild(button)
 
     const state = {
         surface,
@@ -419,30 +458,32 @@ function createTranslateButton(surface) {
         button,
         hideTimeout: 0,
         resetTimeout: 0,
+        isTranslating: false,
     }
 
     surfaceButtons.set(surface, state)
 
     const updateButtonPosition = () => {
         const rect = getSurfaceRect(surface)
-        button.style.top = `${rect.top + window.scrollY + 3}px`
-        button.style.left = `${rect.left + window.scrollX + 3}px`
+        button.style.setProperty("top", `${Math.max(0, rect.top + 3)}px`, "important")
+        button.style.setProperty("left", `${Math.max(0, rect.left + 3)}px`, "important")
     }
 
     const showButton = () => {
         clearHideTimer(state)
         if (!surface.isConnected || !isTranslatableSurface(surface)) {
-            button.style.display = "none"
+            button.style.setProperty("display", "none", "important")
             return
         }
+        ensureButtonLayerRoot().appendChild(button)
         updateButtonPosition()
-        button.style.display = "block"
+        button.style.setProperty("display", "block", "important")
     }
 
     const hideButtonWithDelay = () => {
         clearHideTimer(state)
         state.hideTimeout = setTimeout(() => {
-            button.style.display = "none"
+            button.style.setProperty("display", "none", "important")
             state.hideTimeout = 0
         }, BUTTON_HIDE_DELAY)
     }
@@ -451,15 +492,19 @@ function createTranslateButton(surface) {
     hoverTarget.addEventListener("mouseleave", hideButtonWithDelay)
     button.addEventListener("mouseenter", showButton)
     button.addEventListener("mouseleave", hideButtonWithDelay)
-    button.addEventListener("click", async (event) => {
+    const activateButton = async (event) => {
         event.preventDefault()
         event.stopPropagation()
+        event.stopImmediatePropagation()
+
+        if (state.isTranslating) return
 
         if (!isTranslatableSurface(surface)) {
             setButtonMessage(state, "仅支持漫画图", 1200)
             return
         }
 
+        state.isTranslating = true
         if (state.resetTimeout) {
             clearTimeout(state.resetTimeout)
             state.resetTimeout = 0
@@ -473,10 +518,18 @@ function createTranslateButton(surface) {
             button.textContent = "翻译完成"
         } catch (error) {
             console.error("翻译失败:", error)
-            if (surface instanceof HTMLCanvasElement && isCanvasReadBlockedError(error)) {
-                button.textContent = "当前页面禁止读取画布"
+            const errorMessage = error instanceof Error ? error.message : String(error || "")
+            if (isMissingProviderConfigMessage(errorMessage)) {
+                button.textContent = "请先配置翻译接口"
+            } else if (surface instanceof HTMLCanvasElement) {
+                if (isCanvasReadBlockedError(error)) {
+                    button.textContent = "该页面canvas无法转base64"
+                } else if (/structured|格式|数量|不匹配|列表|list/i.test(errorMessage)) {
+                    button.textContent = "请重试/切并行"
+                } else {
+                    button.textContent = "翻译失败"
+                }
             } else {
-                const errorMessage = error instanceof Error ? error.message : String(error || "")
                 if (/structured|格式|数量|不匹配|列表|list/i.test(errorMessage)) {
                     button.textContent = "请重试/切并行"
                 } else {
@@ -486,7 +539,15 @@ function createTranslateButton(surface) {
         }
 
         scheduleButtonReset(state)
-    })
+        state.isTranslating = false
+    }
+
+    button.addEventListener("pointerdown", activateButton, true)
+    button.addEventListener("click", (event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        event.stopImmediatePropagation()
+    }, true)
 }
 
 function init() {
