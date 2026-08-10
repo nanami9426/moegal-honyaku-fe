@@ -1,13 +1,16 @@
 :root {
-  --page-bg: #f3f4f6;
-  --panel-bg: #ffffff;
+  --page-bg: #f8efec;
+  --panel-bg: #fffaf8;
   --panel-bg-image: rgba(255, 255, 255, 0.9);
-  --text-primary: #1f2937;
-  --text-secondary: #4b5563;
-  --line: #d1d5db;
-  --line-soft: #e5e7eb;
-  --btn: #111827;
-  --btn-hover: #0b1220;
+  --text-primary: #4d3b39;
+  --text-secondary: #75615e;
+  --line: #dec9c4;
+  --line-soft: #eddfdb;
+  --brand-coral: #d9827c;
+  --brand-coral-light: #fff2ef;
+  --brand-coral-deep: #9c514d;
+  --btn: #c87570;
+  --btn-hover: #b86561;
   --ok: #15803d;
   --warn: #b45309;
   --error: #b91c1c;
@@ -45,14 +48,59 @@ body.has-custom-bg {
   margin-bottom: 12px;
 }
 
-.badge {
-  display: inline-block;
-  padding: 2px 8px;
+.brand-logo {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid #f0cbc6;
   border-radius: 999px;
-  font-size: 11px;
-  letter-spacing: 0.3px;
-  color: #ffffff;
-  background: #111827;
+  background: var(--brand-coral-light);
+}
+
+.brand-wordmark-frame {
+  display: inline-block;
+  width: calc(14ch + 2px);
+  height: 18px;
+  overflow: hidden;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 18px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.brand-typewriter {
+  display: inline-block;
+  box-sizing: content-box;
+  width: 0;
+  overflow: hidden;
+  border-right: 2px solid var(--brand-coral);
+  color: var(--brand-coral-deep);
+  white-space: nowrap;
+  animation:
+    brand-typewriter 1.05s steps(14, end) 0.12s forwards,
+    brand-caret 0.64s step-end 0.12s 4 forwards;
+}
+
+@keyframes brand-typewriter {
+  from {
+    width: 0;
+  }
+  to {
+    width: 14ch;
+  }
+}
+
+@keyframes brand-caret {
+  0%,
+  100% {
+    border-color: transparent;
+  }
+  50% {
+    border-color: var(--brand-coral);
+  }
 }
 
 .hero h1 {
@@ -74,14 +122,14 @@ body.has-custom-bg {
   border: 1px solid var(--line-soft);
   border-radius: 10px;
   padding: 10px;
-  background: #ffffff;
+  background: var(--panel-bg);
 }
 
 body.has-custom-bg .form-card,
 body.has-custom-bg .conf-card,
 body.has-custom-bg .bg-card {
-  background: rgba(255, 255, 255, 0.78);
-  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 250, 248, 0.82);
+  border-color: rgba(240, 203, 198, 0.82);
 }
 
 .form-card,
@@ -108,7 +156,7 @@ body.has-custom-bg .bg-card {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #ffffff;
+  background: #fffdfc;
   color: var(--text-primary);
   padding: 8px 10px;
   font-size: 13px;
@@ -116,7 +164,7 @@ body.has-custom-bg .bg-card {
 }
 
 .field-input:focus {
-  border-color: #9ca3af;
+  border-color: var(--brand-coral);
 }
 
 .file-input {
@@ -128,7 +176,7 @@ body.has-custom-bg .bg-card {
   border-radius: 6px;
   padding: 4px 8px;
   margin-right: 8px;
-  background: #f9fafb;
+  background: var(--brand-coral-light);
   color: var(--text-primary);
   cursor: pointer;
 }
@@ -194,8 +242,8 @@ body.has-custom-bg .bg-card {
 }
 
 .status.is-idle {
-  color: #374151;
-  background: #e5e7eb;
+  color: var(--text-secondary);
+  background: #eee0dc;
 }
 
 .status.is-loading {
@@ -220,7 +268,7 @@ body.has-custom-bg .bg-card {
 .ghost-btn {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #ffffff;
+  background: #fffdfc;
   color: var(--text-primary);
   font-size: 13px;
   padding: 6px 10px;
@@ -279,7 +327,7 @@ body.is-cropping-bg {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(255, 255, 255, 0.98);
+  background: rgba(255, 250, 248, 0.98);
   padding: 10px;
 }
 
@@ -344,5 +392,13 @@ body.is-cropping-bg {
 
   .hero h1 {
     font-size: 18px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-typewriter {
+    width: 14ch;
+    border-right-color: transparent;
+    animation: none;
   }
 }

@@ -64,6 +64,23 @@ test("popup 包含设备选择与当前设备状态节点", () => {
   assert.match(html, /id="current-device"/)
 })
 
+test("品牌 Logo 使用新配色并在每次 popup 打开时播放打字机动画", () => {
+  const html = readFileSync(new URL("../popup.html", import.meta.url), "utf8")
+  const css = readFileSync(new URL("../styles.css", import.meta.url), "utf8")
+
+  assert.match(html, /class="brand-logo"/)
+  assert.match(html, /class="brand-typewriter">Moegal Honyaku</)
+  assert.doesNotMatch(html, /class="brand-mark"/)
+  assert.match(css, /--brand-coral:\s*#d9827c/)
+  assert.match(css, /--brand-coral-light:\s*#fff2ef/)
+  assert.match(css, /--page-bg:\s*#f8efec/)
+  assert.match(css, /--btn:\s*#c87570/)
+  assert.doesNotMatch(css, /(?:linear|radial)-gradient\(/)
+  assert.match(css, /@keyframes brand-typewriter/)
+  assert.match(css, /steps\(14, end\)/)
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/)
+})
+
 test("大背景导出尺寸受像素和边长限制", () => {
   const result = fitBackgroundExportSize(8000, 6000)
 
