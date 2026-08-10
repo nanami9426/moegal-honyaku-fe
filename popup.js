@@ -9,9 +9,14 @@ const CONF_STORAGE_KEY = "popup_last_translate_conf"
 const TEXT_DIRECTION_STORAGE_KEY = "translate_text_direction"
 const DEFAULT_TEXT_DIRECTION = "horizontal"
 const TEXT_DIRECTION_OPTIONS = ["horizontal", "vertical"]
+const DEVICE_OPTIONS = ["cpu", "gpu"]
 const CROP_ZOOM_STEPS = 1000
 const BG_EXPORT_MAX_EDGE = 1600
 const BG_EXPORT_MAX_PIXELS = 1_600_000
+const BG_EXPORT_MAX_STORAGE_BYTES = 3 * 1024 * 1024
+const BG_EXPORT_SCALE_STEP = 0.82
+const BG_EXPORT_MAX_RESIZE_ATTEMPTS = 6
+const BG_EXPORT_QUALITIES = [0.88, 0.76, 0.64, 0.52]
 
 const PROVIDER_LABEL = {
   custom: "Custom",
@@ -38,13 +43,29 @@ const TEXT_DIRECTION_DESC = {
   vertical: "竖排：按自上而下、列从右到左的方式回填文字。",
 }
 
+const DEVICE_LABEL = {
+  cpu: "CPU",
+  gpu: "GPU",
+}
+
+const DEVICE_DESC = {
+  cpu: "CPU：兼容性更好，无需独立显卡。",
+  gpu: "GPU：加速 OCR；CUDA 不可用时后端会自动回退到 CPU。",
+}
+
 const state = {
   options: { ...DEFAULT_OPTIONS },
   current: {
     translate_api_type: DEFAULT_PROVIDER,
     translate_mode: "parallel",
+    use_gpu: false,
   },
   providerStatus: {},
+  gpuStatus: {
+    requested: false,
+    device: "cpu",
+    message: "",
+  },
   local: {
     text_direction: DEFAULT_TEXT_DIRECTION,
   },
@@ -76,11 +97,14 @@ const view = {
   providerSelect: null,
   modeSelect: null,
   directionSelect: null,
+  deviceSelect: null,
   currentEngine: null,
   currentMode: null,
   currentDirection: null,
+  currentDevice: null,
   modeTip: null,
   directionTip: null,
+  deviceTip: null,
   errorTip: null,
   syncStatus: null,
   lastSync: null,
@@ -123,6 +147,18 @@ function fitBackgroundExportSize(width, height) {
     width: Math.max(1, Math.round(nextWidth)),
     height: Math.max(1, Math.round(nextHeight)),
   }
+}
+
+function backgroundStorageBytes(dataUrl) {
+  const normalized = typeof dataUrl === "string" ? dataUrl : ""
+  return JSON.stringify({ [BG_STORAGE_KEY]: normalized }).length
+}
+
+function formatBytes(bytes) {
+  const value = Number.isFinite(bytes) ? Math.max(0, bytes) : 0
+  if (value < 1024) return `${Math.round(value)} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`
 }
 
 function now() {
@@ -170,6 +206,11 @@ function currentProviderStatusMessage() {
   return info.message
 }
 
+function currentGpuStatusMessage() {
+  if (!state.current.use_gpu) return ""
+  return state.gpuStatus.message
+}
+
 function modeLabel(value) {
   return MODE_LABEL[value] || value
 }
@@ -189,6 +230,35 @@ function textDirectionTip(value) {
 function normalizeTextDirection(value) {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : ""
   return TEXT_DIRECTION_OPTIONS.includes(normalized) ? normalized : DEFAULT_TEXT_DIRECTION
+}
+
+function normalizeUseGpu(value) {
+  if (typeof value === "boolean") return value
+  if (typeof value === "string") {
+    return ["1", "true", "yes", "on", "gpu"].includes(value.trim().toLowerCase())
+  }
+  return false
+}
+
+function deviceValue(useGpu) {
+  return useGpu ? "gpu" : "cpu"
+}
+
+function deviceLabel(value) {
+  return DEVICE_LABEL[value] || DEVICE_LABEL.cpu
+}
+
+function deviceTip(value) {
+  return state.gpuStatus.message || DEVICE_DESC[value] || DEVICE_DESC.cpu
+}
+
+function normalizeGpuStatus(payload, requested) {
+  const item = payload && typeof payload === "object" ? payload : {}
+  return {
+    requested,
+    device: item.device === "gpu" ? "gpu" : "cpu",
+    message: typeof item.message === "string" ? item.message.trim() : "",
+  }
 }
 
 function getExtensionStorageArea() {
@@ -248,9 +318,11 @@ function renderCurrent() {
   view.currentEngine.textContent = providerLabel(state.current.translate_api_type)
   view.currentMode.textContent = modeLabel(state.current.translate_mode)
   view.currentDirection.textContent = textDirectionLabel(state.local.text_direction)
+  view.currentDevice.textContent = deviceLabel(state.gpuStatus.device)
   view.modeTip.textContent = modeTip(state.current.translate_mode)
   view.directionTip.textContent = textDirectionTip(state.local.text_direction)
-  setError(currentProviderStatusMessage())
+  view.deviceTip.textContent = deviceTip(deviceValue(state.current.use_gpu))
+  setError([currentProviderStatusMessage(), currentGpuStatusMessage()].filter(Boolean).join("；"))
 }
 
 function applyTextDirection(value) {
@@ -276,18 +348,94 @@ function applyBackground(dataUrl) {
   return true
 }
 
-function persistBackground(dataUrl) {
+function clearLegacyBackground() {
   try {
-    if (dataUrl) {
-      localStorage.setItem(BG_STORAGE_KEY, dataUrl)
+    globalThis.localStorage?.removeItem(BG_STORAGE_KEY)
+  } catch (error) {
+    console.error("旧背景缓存清理失败:", error)
+  }
+}
+
+function readLegacyBackground() {
+  try {
+    return globalThis.localStorage?.getItem(BG_STORAGE_KEY) || ""
+  } catch (error) {
+    console.error("旧背景缓存读取失败:", error)
+    return ""
+  }
+}
+
+async function persistBackground(dataUrl) {
+  const normalized = typeof dataUrl === "string" ? dataUrl.trim() : ""
+  const storage = getExtensionStorageArea()
+
+  if (storage) {
+    const saved = await new Promise((resolve) => {
+      const onComplete = () => {
+        const lastError = globalThis.chrome?.runtime?.lastError
+        if (lastError) {
+          console.error("背景保存失败:", lastError)
+          resolve(false)
+          return
+        }
+        resolve(true)
+      }
+
+      if (normalized) {
+        storage.set({ [BG_STORAGE_KEY]: normalized }, onComplete)
+      } else {
+        storage.remove(BG_STORAGE_KEY, onComplete)
+      }
+    })
+    if (saved) clearLegacyBackground()
+    return saved
+  }
+
+  try {
+    if (normalized) {
+      globalThis.localStorage?.setItem(BG_STORAGE_KEY, normalized)
     } else {
-      localStorage.removeItem(BG_STORAGE_KEY)
+      globalThis.localStorage?.removeItem(BG_STORAGE_KEY)
     }
-    return true
+    return Boolean(globalThis.localStorage)
   } catch (error) {
     console.error("背景保存失败:", error)
     return false
   }
+}
+
+async function readStoredBackground() {
+  const storage = getExtensionStorageArea()
+  if (storage) {
+    const stored = await new Promise((resolve, reject) => {
+      storage.get({ [BG_STORAGE_KEY]: "" }, (result) => {
+        const lastError = globalThis.chrome?.runtime?.lastError
+        if (lastError) {
+          console.error("背景读取失败:", lastError)
+          reject(new Error(lastError.message || "浏览器扩展存储读取失败"))
+          return
+        }
+        const value = result?.[BG_STORAGE_KEY]
+        resolve(typeof value === "string" ? value : "")
+      })
+    })
+    if (stored) return stored
+  }
+
+  const legacy = readLegacyBackground()
+  if (legacy && storage) {
+    await persistBackground(legacy)
+  }
+  return legacy
+}
+
+function ensureBackgroundDecodable(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve()
+    image.onerror = () => reject(new Error("背景图片数据已损坏或图片过大，请重新设置"))
+    image.src = dataUrl
+  })
 }
 
 function persistCurrentConfig() {
@@ -309,14 +457,19 @@ function hydrateCachedConfig() {
     if (typeof parsed?.translate_mode === "string" && parsed.translate_mode.trim()) {
       state.current.translate_mode = parsed.translate_mode.trim()
     }
+    if (typeof parsed?.use_gpu === "boolean") {
+      state.current.use_gpu = parsed.use_gpu
+      state.gpuStatus = normalizeGpuStatus(null, parsed.use_gpu)
+    }
   } catch (error) {
     console.error("配置缓存读取失败:", error)
   }
 }
 
-function loadBackground() {
+async function loadBackground() {
   try {
-    const cached = localStorage.getItem(BG_STORAGE_KEY) || ""
+    const cached = await readStoredBackground()
+    if (cached) await ensureBackgroundDecodable(cached)
     const loaded = applyBackground(cached)
     setBackgroundTip(loaded ? "已启用自定义背景。" : "未设置背景", false)
   } catch (error) {
@@ -558,19 +711,39 @@ function exportCroppedBackground() {
   const sy = clamp(syRaw, 0, Math.max(0, crop.image.naturalHeight - sh))
 
   const outputSize = fitBackgroundExportSize(sw, sh)
-  const outputWidth = outputSize.width
-  const outputHeight = outputSize.height
+  let outputWidth = outputSize.width
+  let outputHeight = outputSize.height
   const canvas = document.createElement("canvas")
-  canvas.width = outputWidth
-  canvas.height = outputHeight
-
   const context = canvas.getContext("2d")
   if (!context) {
     throw new Error("裁剪失败，请重试。")
   }
 
-  context.drawImage(crop.image, sx, sy, sw, sh, 0, 0, outputWidth, outputHeight)
-  return canvas.toDataURL("image/png")
+  let smallestDataUrl = ""
+  for (let attempt = 0; attempt < BG_EXPORT_MAX_RESIZE_ATTEMPTS; attempt += 1) {
+    canvas.width = outputWidth
+    canvas.height = outputHeight
+    context.clearRect(0, 0, outputWidth, outputHeight)
+    context.drawImage(crop.image, sx, sy, sw, sh, 0, 0, outputWidth, outputHeight)
+
+    for (const quality of BG_EXPORT_QUALITIES) {
+      const dataUrl = canvas.toDataURL("image/webp", quality)
+      if (!dataUrl.startsWith("data:image/webp")) {
+        throw new Error("当前浏览器不支持 WebP 背景压缩")
+      }
+      smallestDataUrl = dataUrl
+      if (backgroundStorageBytes(dataUrl) <= BG_EXPORT_MAX_STORAGE_BYTES) {
+        return dataUrl
+      }
+    }
+
+    outputWidth = Math.max(1, Math.round(outputWidth * BG_EXPORT_SCALE_STEP))
+    outputHeight = Math.max(1, Math.round(outputHeight * BG_EXPORT_SCALE_STEP))
+  }
+
+  const actualSize = formatBytes(backgroundStorageBytes(smallestDataUrl))
+  const limit = formatBytes(BG_EXPORT_MAX_STORAGE_BYTES)
+  throw new Error(`背景压缩后仍过大（${actualSize}，上限 ${limit}），请换一张图片`)
 }
 
 function cancelCropper() {
@@ -673,15 +846,14 @@ async function onBackgroundFileChange(event) {
       setBackgroundTip("已取消背景更新。", false)
       return
     }
-    const applied = applyBackground(croppedDataUrl)
-    if (!applied) {
+    if (!await persistBackground(croppedDataUrl)) {
+      throw new Error("背景保存失败，请检查浏览器扩展存储空间")
+    }
+    if (!applyBackground(croppedDataUrl)) {
       throw new Error("背景应用失败，请重试。")
     }
-    if (!persistBackground(croppedDataUrl)) {
-      setBackgroundTip(`背景已应用：${file.name}（未保存，图片可能过大）`, true)
-      return
-    }
-    setBackgroundTip(`背景已更新：${file.name}`, false)
+    const storedSize = formatBytes(backgroundStorageBytes(croppedDataUrl))
+    setBackgroundTip(`背景已更新：${file.name}（${storedSize}）`, false)
   } catch (error) {
     console.error("背景设置失败:", error)
     setBackgroundTip(error.message || "背景设置失败。", true)
@@ -690,8 +862,8 @@ async function onBackgroundFileChange(event) {
   }
 }
 
-function onBackgroundClear() {
-  if (!persistBackground("")) {
+async function onBackgroundClear() {
+  if (!await persistBackground("")) {
     setBackgroundTip("清除背景失败，请重试。", true)
     return
   }
@@ -703,6 +875,7 @@ function setLoading(loading, loadingText) {
   view.providerSelect.disabled = loading
   view.modeSelect.disabled = loading
   view.directionSelect.disabled = loading
+  view.deviceSelect.disabled = loading
   view.reloadButton.disabled = loading
   view.reloadButton.textContent = loading ? loadingText : "重新拉取配置"
 }
@@ -796,16 +969,20 @@ function ensureOption(select, value, text) {
 function applyConfig(conf) {
   const nextProvider = normalizeProviderValue(conf?.translate_api_type)
   const nextMode = typeof conf?.translate_mode === "string" ? conf.translate_mode : "parallel"
+  const nextUseGpu = normalizeUseGpu(conf?.use_gpu)
 
   state.current.translate_api_type = nextProvider
   state.current.translate_mode = nextMode
+  state.current.use_gpu = nextUseGpu
   state.providerStatus = normalizeProviderStatus(conf?.provider_status)
+  state.gpuStatus = normalizeGpuStatus(conf?.gpu_status, nextUseGpu)
 
   ensureOption(view.providerSelect, nextProvider, providerLabel(nextProvider))
   ensureOption(view.modeSelect, nextMode, modeLabel(nextMode))
 
   view.providerSelect.value = nextProvider
   view.modeSelect.value = nextMode
+  view.deviceSelect.value = deviceValue(nextUseGpu)
   renderCurrent()
   persistCurrentConfig()
 }
@@ -867,6 +1044,8 @@ async function onConfigChange(attr, value) {
       view.providerSelect.value = oldValue
     } else if (attr === "translate_mode") {
       view.modeSelect.value = oldValue
+    } else if (attr === "use_gpu") {
+      view.deviceSelect.value = deviceValue(oldValue)
     }
     renderCurrent()
     setStatus("保存失败", "is-error")
@@ -903,6 +1082,9 @@ function bindEvents() {
   view.directionSelect.addEventListener("change", async (event) => {
     await onTextDirectionChange(event.target.value)
   })
+  view.deviceSelect.addEventListener("change", async (event) => {
+    await onConfigChange("use_gpu", event.target.value === "gpu")
+  })
   view.reloadButton.addEventListener("click", async () => {
     await syncConfig()
   })
@@ -923,11 +1105,14 @@ async function init() {
   view.providerSelect = document.getElementById("provider-select")
   view.modeSelect = document.getElementById("mode-select")
   view.directionSelect = document.getElementById("direction-select")
+  view.deviceSelect = document.getElementById("device-select")
   view.currentEngine = document.getElementById("current-engine")
   view.currentMode = document.getElementById("current-mode")
   view.currentDirection = document.getElementById("current-direction")
+  view.currentDevice = document.getElementById("current-device")
   view.modeTip = document.getElementById("mode-tip")
   view.directionTip = document.getElementById("direction-tip")
+  view.deviceTip = document.getElementById("device-tip")
   view.errorTip = document.getElementById("error-tip")
   view.syncStatus = document.getElementById("sync-status")
   view.lastSync = document.getElementById("last-sync")
@@ -950,10 +1135,11 @@ async function init() {
   renderSelect(view.providerSelect, state.options.translate_api_type, providerLabel)
   renderSelect(view.modeSelect, state.options.translate_mode, modeLabel)
   renderSelect(view.directionSelect, TEXT_DIRECTION_OPTIONS, textDirectionLabel)
+  renderSelect(view.deviceSelect, DEVICE_OPTIONS, deviceLabel)
   applyConfig(state.current)
   await hydrateTextDirection()
   state.hydrating = false
-  loadBackground()
+  await loadBackground()
 
   bindEvents()
   syncConfig()
