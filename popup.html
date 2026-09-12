@@ -16,7 +16,7 @@
         </span>
       </div>
       <h1>翻译配置</h1>
-      <p class="hero-text">切换翻译供应商、模式、文字方向、擦除方法与计算设备</p>
+      <p class="hero-text">切换翻译供应商、模式、文字方向与计算设备</p>
     </header>
 
     <section class="form-card">
@@ -36,14 +36,9 @@
         <span class="field-label">计算设备</span>
         <select class="field-input" id="device-select"></select>
       </label>
-      <label class="field" for="inpaint-select">
-        <span class="field-label">文字擦除方法</span>
-        <select class="field-input" id="inpaint-select" aria-describedby="inpaint-tip" disabled></select>
-      </label>
       <p class="mode-tip" id="mode-tip">parallel：逐句并发翻译，适合长文本分段处理。</p>
       <p class="mode-tip" id="direction-tip">横排：使用当前默认布局，适合大多数气泡回填。</p>
       <p class="mode-tip" id="device-tip">CPU：兼容性更好，无需独立显卡。</p>
-      <p class="mode-tip" id="inpaint-tip">切换后用于下一次翻译。</p>
       <p class="error-tip" id="error-tip" hidden></p>
     </section>
 
@@ -63,10 +58,6 @@
       <div class="conf-item">
         <span class="label">当前计算设备</span>
         <span class="value" id="current-device">CPU</span>
-      </div>
-      <div class="conf-item">
-        <span class="label">当前擦除方法</span>
-        <span class="value" id="current-inpaint">待同步</span>
       </div>
       <div class="conf-item">
         <span class="label">同步状态</span>
