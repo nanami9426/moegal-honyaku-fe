@@ -1,7 +1,7 @@
 :root {
   --page-bg: #f8efec;
-  --panel-bg: #fffaf8;
-  --panel-bg-image: rgba(255, 255, 255, 0.9);
+  --glass-bg: rgba(248, 239, 236, 0.7);
+  --panel-bg: rgba(255, 250, 248, 0.22);
   --text-primary: #4d3b39;
   --text-secondary: #75615e;
   --line: #dec9c4;
@@ -28,13 +28,58 @@ body {
   color: var(--text-primary);
   font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "SimHei", sans-serif;
   background-color: var(--page-bg);
+  isolation: isolate;
 }
 
-body.has-custom-bg {
+/* 底图与磨砂遮罩分层，避免整体 opacity 让文字也变透明。 */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+body::before {
+  z-index: -2;
+}
+
+body::after {
+  z-index: -1;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(16px) saturate(115%);
+  backdrop-filter: blur(16px) saturate(115%);
+}
+
+body.has-custom-bg::before {
   background-image: var(--popup-bg-image);
   background-repeat: no-repeat;
   background-position: center;
   background-size: cover;
+}
+
+body.is-embedded {
+  min-width: 0;
+  background: transparent;
+}
+
+/* 自定义背景也保留透视，让网页动态仍可隐约透出。 */
+body.is-embedded.has-custom-bg::before {
+  opacity: 0.7;
+}
+
+.close-panel-button {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: rgba(255, 253, 252, 0.45);
+  color: var(--text-primary);
+  font-size: 20px;
+  cursor: pointer;
 }
 
 .panel {
@@ -48,6 +93,16 @@ body.has-custom-bg {
   margin-bottom: 12px;
 }
 
+body.is-embedded .hero {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+body.is-embedded .hero.is-dragging {
+  cursor: grabbing;
+}
+
 .brand-logo {
   display: inline-flex;
   align-items: center;
@@ -55,7 +110,7 @@ body.has-custom-bg {
   padding: 6px 12px;
   border: 1px solid #f0cbc6;
   border-radius: 999px;
-  background: var(--brand-coral-light);
+  background: rgba(255, 242, 239, 0.45);
 }
 
 .brand-wordmark-frame {
@@ -125,13 +180,6 @@ body.has-custom-bg {
   background: var(--panel-bg);
 }
 
-body.has-custom-bg .form-card,
-body.has-custom-bg .conf-card,
-body.has-custom-bg .bg-card {
-  background: rgba(255, 250, 248, 0.82);
-  border-color: rgba(240, 203, 198, 0.82);
-}
-
 .form-card,
 .conf-card {
   margin-bottom: 10px;
@@ -156,7 +204,7 @@ body.has-custom-bg .bg-card {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fffdfc;
+  background: rgba(255, 253, 252, 0.45);
   color: var(--text-primary);
   padding: 8px 10px;
   font-size: 13px;
@@ -165,6 +213,11 @@ body.has-custom-bg .bg-card {
 
 .field-input:focus {
   border-color: var(--brand-coral);
+}
+
+.field-input option {
+  background: var(--page-bg);
+  color: var(--text-primary);
 }
 
 .file-input {
@@ -268,7 +321,7 @@ body.has-custom-bg .bg-card {
 .ghost-btn {
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fffdfc;
+  background: rgba(255, 253, 252, 0.45);
   color: var(--text-primary);
   font-size: 13px;
   padding: 6px 10px;
@@ -327,7 +380,9 @@ body.is-cropping-bg {
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: rgba(255, 250, 248, 0.98);
+  background: rgba(255, 250, 248, 0.7);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
   padding: 10px;
 }
 

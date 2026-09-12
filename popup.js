@@ -1102,6 +1102,43 @@ function bindEvents() {
 }
 
 async function init() {
+  if (window.parent !== window && new URLSearchParams(window.location.search).get("embedded") === "1") {
+    document.body.classList.add("is-embedded")
+    const closeButton = document.getElementById("close-panel-button")
+    closeButton.hidden = false
+    // 消息仅用于关闭面板，不传递配置、背景图或密钥。
+    const closePanel = () => window.parent.postMessage({ type: "moegal-panel-close" }, "*")
+    closeButton.addEventListener("click", closePanel)
+    const dragHandle = document.querySelector(".hero")
+    dragHandle.title = "按住拖动面板"
+    let dragPointerId = null
+    dragHandle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || dragPointerId !== null) return
+      event.preventDefault()
+      dragPointerId = event.pointerId
+      dragHandle.setPointerCapture(event.pointerId)
+      dragHandle.classList.add("is-dragging")
+      window.parent.postMessage({ type: "moegal-panel-drag-start", x: event.screenX, y: event.screenY }, "*")
+    })
+    dragHandle.addEventListener("pointermove", (event) => {
+      if (event.pointerId !== dragPointerId) return
+      // 使用屏幕坐标，避免 iframe 随面板移动后 clientX/clientY 改变造成抖动。
+      window.parent.postMessage({ type: "moegal-panel-drag-move", x: event.screenX, y: event.screenY }, "*")
+    })
+    const stopDragging = (event) => {
+      if (event.pointerId !== dragPointerId) return
+      dragPointerId = null
+      dragHandle.classList.remove("is-dragging")
+      if (dragHandle.hasPointerCapture(event.pointerId)) dragHandle.releasePointerCapture(event.pointerId)
+      window.parent.postMessage({ type: "moegal-panel-drag-end" }, "*")
+    }
+    dragHandle.addEventListener("pointerup", stopDragging)
+    dragHandle.addEventListener("pointercancel", stopDragging)
+    dragHandle.addEventListener("lostpointercapture", stopDragging)
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !state.cropper.isOpen) closePanel()
+    })
+  }
   view.providerSelect = document.getElementById("provider-select")
   view.modeSelect = document.getElementById("mode-select")
   view.directionSelect = document.getElementById("direction-select")
