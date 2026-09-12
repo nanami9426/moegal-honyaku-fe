@@ -573,6 +573,7 @@ async function applyTranslatedResult(state, translatedDataUrl, sourceSignature) 
 
 async function requestTranslation(surface) {
     const payload = await getTranslatePayload(surface)
+    await ensureTranslationProvider()
     const response = await fetch(TRANSLATE_API_URL, {
         method: "POST",
         headers: {

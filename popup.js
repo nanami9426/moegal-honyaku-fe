@@ -1001,7 +1001,7 @@ async function syncConfig() {
     state.hydrating = true
     renderSelect(view.providerSelect, state.options.translate_api_type, providerLabel)
     renderSelect(view.modeSelect, state.options.translate_mode, modeLabel)
-    applyConfig(await queryConf())
+    applyConfig(await ensureTranslationProvider(await queryConf(), true))
     state.hydrating = false
 
     view.lastSync.textContent = now()

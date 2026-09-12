@@ -262,7 +262,13 @@ function createHarness() {
     },
     decodeURIComponent,
     document,
-    fetch: async () => {
+    fetch: async (url) => {
+      if (url.endsWith("/conf/query")) {
+        return {
+          ok: true,
+          json: async () => ({ translate_api_type: "custom", provider_status: { custom: { configured: true } } }),
+        }
+      }
       fetchCalls += 1
       const payload = deferredFetch ? await deferredFetch.promise : fetchPayload
       deferredFetch = null
@@ -295,7 +301,8 @@ function createHarness() {
   }
   context.globalThis = context
 
-  const source = readFileSync(new URL("../content.js", import.meta.url), "utf8")
+  const source = readFileSync(new URL("../provider.js", import.meta.url), "utf8") + "\n" +
+    readFileSync(new URL("../content.js", import.meta.url), "utf8")
   const sourceWithoutBoot = source.replace(/\nconst observer = new MutationObserver[\s\S]*?\ninit\(\)\s*$/, "")
   vm.runInNewContext(
     `${sourceWithoutBoot}\n;globalThis.__contentTest = {
