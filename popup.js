@@ -3,6 +3,7 @@ const DEFAULT_PROVIDER = "custom"
 const DEFAULT_OPTIONS = {
   translate_api_type: [DEFAULT_PROVIDER, "dashscope"],
   translate_mode: ["parallel", "structured"],
+  inpaint_backend: ["opencv", "lama"],
 }
 const BG_STORAGE_KEY = "popup_custom_background"
 const CONF_STORAGE_KEY = "popup_last_translate_conf"
@@ -50,7 +51,12 @@ const DEVICE_LABEL = {
 
 const DEVICE_DESC = {
   cpu: "CPU：兼容性更好，无需独立显卡。",
-  gpu: "GPU：加速 OCR；CUDA 不可用时后端会自动回退到 CPU。",
+  gpu: "GPU：加速 OCR 和 LaMa；CUDA 不可用时会自动回退到 CPU。",
+}
+
+const INPAINT_LABEL = {
+  opencv: "OpenCV",
+  lama: "LaMa",
 }
 
 const state = {
@@ -59,7 +65,10 @@ const state = {
     translate_api_type: DEFAULT_PROVIDER,
     translate_mode: "parallel",
     use_gpu: false,
+    inpaint_backend: "opencv",
   },
+  supportsInpaint: false,
+  inpaintStatus: { requested: "opencv", effective_backend: "opencv", available: true, message: "" },
   providerStatus: {},
   gpuStatus: {
     requested: false,
@@ -98,13 +107,16 @@ const view = {
   modeSelect: null,
   directionSelect: null,
   deviceSelect: null,
+  inpaintSelect: null,
   currentEngine: null,
   currentMode: null,
   currentDirection: null,
   currentDevice: null,
+  currentInpaint: null,
   modeTip: null,
   directionTip: null,
   deviceTip: null,
+  inpaintTip: null,
   errorTip: null,
   syncStatus: null,
   lastSync: null,
@@ -209,6 +221,25 @@ function currentProviderStatusMessage() {
 function currentGpuStatusMessage() {
   if (!state.current.use_gpu) return ""
   return state.gpuStatus.message
+}
+
+function currentInpaintStatusMessage() {
+  if (!state.supportsInpaint || state.inpaintStatus.available) return ""
+  return state.inpaintStatus.message || "所选擦除方法不可用，已回退到 OpenCV。"
+}
+
+function inpaintLabel(value) {
+  return INPAINT_LABEL[value] || value
+}
+
+function normalizeInpaintStatus(payload, requested) {
+  const item = payload && typeof payload === "object" ? payload : {}
+  return {
+    requested,
+    effective_backend: DEFAULT_OPTIONS.inpaint_backend.includes(item.effective_backend) ? item.effective_backend : requested,
+    available: item.available !== false,
+    message: typeof item.message === "string" ? item.message.trim() : "",
+  }
 }
 
 function modeLabel(value) {
@@ -319,10 +350,17 @@ function renderCurrent() {
   view.currentMode.textContent = modeLabel(state.current.translate_mode)
   view.currentDirection.textContent = textDirectionLabel(state.local.text_direction)
   view.currentDevice.textContent = deviceLabel(state.gpuStatus.device)
+  const effectiveInpaint = state.inpaintStatus.effective_backend
+  view.currentInpaint.textContent = state.supportsInpaint
+    ? (effectiveInpaint === state.current.inpaint_backend ? inpaintLabel(effectiveInpaint) : "OpenCV（已回退）")
+    : "需更新后端"
   view.modeTip.textContent = modeTip(state.current.translate_mode)
   view.directionTip.textContent = textDirectionTip(state.local.text_direction)
   view.deviceTip.textContent = deviceTip(deviceValue(state.current.use_gpu))
-  setError([currentProviderStatusMessage(), currentGpuStatusMessage()].filter(Boolean).join("；"))
+  view.inpaintTip.textContent = state.supportsInpaint
+    ? "切换后用于下一次翻译。"
+    : "请更新后端以切换擦除方法。"
+  setError([currentProviderStatusMessage(), currentGpuStatusMessage(), currentInpaintStatusMessage()].filter(Boolean).join("；"))
 }
 
 function applyTextDirection(value) {
@@ -460,6 +498,9 @@ function hydrateCachedConfig() {
     if (typeof parsed?.use_gpu === "boolean") {
       state.current.use_gpu = parsed.use_gpu
       state.gpuStatus = normalizeGpuStatus(null, parsed.use_gpu)
+    }
+    if (DEFAULT_OPTIONS.inpaint_backend.includes(parsed?.inpaint_backend)) {
+      state.current.inpaint_backend = parsed.inpaint_backend
     }
   } catch (error) {
     console.error("配置缓存读取失败:", error)
@@ -876,6 +917,7 @@ function setLoading(loading, loadingText) {
   view.modeSelect.disabled = loading
   view.directionSelect.disabled = loading
   view.deviceSelect.disabled = loading
+  view.inpaintSelect.disabled = loading || !state.supportsInpaint
   view.reloadButton.disabled = loading
   view.reloadButton.textContent = loading ? loadingText : "重新拉取配置"
 }
@@ -940,9 +982,12 @@ function normalizeOptions(payload) {
     ),
   )
   const modeOptions = cleanValues(payload?.translate_mode)
+  const inpaintOptions = [...new Set(cleanValues(payload?.inpaint_backend))]
+    .filter((value) => DEFAULT_OPTIONS.inpaint_backend.includes(value))
   return {
     translate_api_type: providerOptions.length > 0 ? providerOptions : [...DEFAULT_OPTIONS.translate_api_type],
     translate_mode: modeOptions.length > 0 ? modeOptions : [...DEFAULT_OPTIONS.translate_mode],
+    inpaint_backend: inpaintOptions.length > 0 ? inpaintOptions : [...DEFAULT_OPTIONS.inpaint_backend],
   }
 }
 
@@ -970,19 +1015,27 @@ function applyConfig(conf) {
   const nextProvider = normalizeProviderValue(conf?.translate_api_type)
   const nextMode = typeof conf?.translate_mode === "string" ? conf.translate_mode : "parallel"
   const nextUseGpu = normalizeUseGpu(conf?.use_gpu)
+  // 旧版后端没有此字段时禁用选择，避免把前端默认值误当成已经保存的后端设置。
+  state.supportsInpaint = DEFAULT_OPTIONS.inpaint_backend.includes(conf?.inpaint_backend)
+  const nextInpaint = state.supportsInpaint ? conf.inpaint_backend : "opencv"
 
   state.current.translate_api_type = nextProvider
   state.current.translate_mode = nextMode
   state.current.use_gpu = nextUseGpu
+  state.current.inpaint_backend = nextInpaint
   state.providerStatus = normalizeProviderStatus(conf?.provider_status)
   state.gpuStatus = normalizeGpuStatus(conf?.gpu_status, nextUseGpu)
+  state.inpaintStatus = normalizeInpaintStatus(conf?.inpaint_status, nextInpaint)
 
   ensureOption(view.providerSelect, nextProvider, providerLabel(nextProvider))
   ensureOption(view.modeSelect, nextMode, modeLabel(nextMode))
+  ensureOption(view.inpaintSelect, nextInpaint, inpaintLabel(nextInpaint))
 
   view.providerSelect.value = nextProvider
   view.modeSelect.value = nextMode
   view.deviceSelect.value = deviceValue(nextUseGpu)
+  view.inpaintSelect.value = nextInpaint
+  view.inpaintSelect.disabled = !state.supportsInpaint
   renderCurrent()
   persistCurrentConfig()
 }
@@ -1001,6 +1054,7 @@ async function syncConfig() {
     state.hydrating = true
     renderSelect(view.providerSelect, state.options.translate_api_type, providerLabel)
     renderSelect(view.modeSelect, state.options.translate_mode, modeLabel)
+    renderSelect(view.inpaintSelect, state.options.inpaint_backend, inpaintLabel)
     applyConfig(await ensureTranslationProvider(await queryConf(), true))
     state.hydrating = false
 
@@ -1026,6 +1080,7 @@ function withStructuredSuggestion(message) {
 
 async function onConfigChange(attr, value) {
   if (state.hydrating) return
+  if (attr === "inpaint_backend" && !state.supportsInpaint) return
 
   const oldValue = state.current[attr]
   if (oldValue === value) return
@@ -1046,6 +1101,8 @@ async function onConfigChange(attr, value) {
       view.modeSelect.value = oldValue
     } else if (attr === "use_gpu") {
       view.deviceSelect.value = deviceValue(oldValue)
+    } else if (attr === "inpaint_backend") {
+      view.inpaintSelect.value = oldValue
     }
     renderCurrent()
     setStatus("保存失败", "is-error")
@@ -1084,6 +1141,9 @@ function bindEvents() {
   })
   view.deviceSelect.addEventListener("change", async (event) => {
     await onConfigChange("use_gpu", event.target.value === "gpu")
+  })
+  view.inpaintSelect.addEventListener("change", async (event) => {
+    await onConfigChange("inpaint_backend", event.target.value)
   })
   view.reloadButton.addEventListener("click", async () => {
     await syncConfig()
@@ -1144,13 +1204,16 @@ async function init() {
   view.modeSelect = document.getElementById("mode-select")
   view.directionSelect = document.getElementById("direction-select")
   view.deviceSelect = document.getElementById("device-select")
+  view.inpaintSelect = document.getElementById("inpaint-select")
   view.currentEngine = document.getElementById("current-engine")
   view.currentMode = document.getElementById("current-mode")
   view.currentDirection = document.getElementById("current-direction")
   view.currentDevice = document.getElementById("current-device")
+  view.currentInpaint = document.getElementById("current-inpaint")
   view.modeTip = document.getElementById("mode-tip")
   view.directionTip = document.getElementById("direction-tip")
   view.deviceTip = document.getElementById("device-tip")
+  view.inpaintTip = document.getElementById("inpaint-tip")
   view.errorTip = document.getElementById("error-tip")
   view.syncStatus = document.getElementById("sync-status")
   view.lastSync = document.getElementById("last-sync")
@@ -1174,6 +1237,7 @@ async function init() {
   renderSelect(view.modeSelect, state.options.translate_mode, modeLabel)
   renderSelect(view.directionSelect, TEXT_DIRECTION_OPTIONS, textDirectionLabel)
   renderSelect(view.deviceSelect, DEVICE_OPTIONS, deviceLabel)
+  renderSelect(view.inpaintSelect, state.options.inpaint_backend, inpaintLabel)
   applyConfig(state.current)
   await hydrateTextDirection()
   state.hydrating = false
