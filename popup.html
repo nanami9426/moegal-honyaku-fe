@@ -81,6 +81,14 @@
     </section>
 
     <button type="button" id="reload-conf-button" class="sync-btn">重新拉取配置</button>
+
+    <section class="update-card" aria-label="检查更新">
+      <div class="update-actions">
+        <button type="button" id="check-update-button" class="ghost-btn">检查更新</button>
+        <a id="update-repository-link" target="_blank" rel="noopener noreferrer" hidden>有新版本，点击跳转</a>
+      </div>
+      <p id="update-status" class="mode-tip" role="status" hidden></p>
+    </section>
   </main>
 
   <section class="cropper-overlay" id="bg-cropper-overlay" hidden>
@@ -102,6 +110,7 @@
   </section>
 
   <script src="provider.js"></script>
+  <script src="updates.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

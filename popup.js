@@ -1102,6 +1102,7 @@ function bindEvents() {
 }
 
 async function init() {
+  initUpdateControls()
   if (window.parent !== window && new URLSearchParams(window.location.search).get("embedded") === "1") {
     document.body.classList.add("is-embedded")
     const closeButton = document.getElementById("close-panel-button")

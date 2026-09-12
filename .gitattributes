@@ -1,0 +1,2 @@
+# Git/GitHub 源码压缩包写入实际提交号，避免手工维护版本号。
+update-version.json export-subst
