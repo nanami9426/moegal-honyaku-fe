@@ -96,6 +96,28 @@ body.is-embedded.has-custom-bg::before {
   padding: 0;
 }
 
+.auto-translate-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+}
+
+.auto-translate-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.auto-translate-field input {
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  accent-color: var(--btn);
+}
+
 .hero {
   margin-bottom: 12px;
 }
@@ -169,13 +191,6 @@ body.is-embedded .hero.is-dragging {
   font-size: 19px;
   line-height: 1.2;
   margin-top: 8px;
-}
-
-.hero-text {
-  margin-top: 6px;
-  color: var(--text-secondary);
-  font-size: 13px;
-  line-height: 1.4;
 }
 
 .form-card,
@@ -476,6 +491,7 @@ body.is-cropping-bg {
   .hero h1 {
     font-size: 18px;
   }
+
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -60,7 +60,6 @@ test("popup 包含设备选择与当前设备状态节点", () => {
   const html = readFileSync(new URL("../popup.html", import.meta.url), "utf8")
 
   assert.match(html, /id="device-select"/)
-  assert.match(html, /id="device-tip"/)
   assert.match(html, /id="current-device"/)
 })
 

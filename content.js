@@ -26,6 +26,12 @@ const surfaceButtons = new WeakMap()
 const translationOverlays = new WeakMap()
 const positionedContainers = new WeakMap()
 let buttonLayerRoot = null
+const translationRequests = new Map()
+const translationResults = new Map()
+let translationResultBytes = 0
+let providerCheck = null
+let providerCheckedAt = 0
+let translationConfigVersion = 0
 
 function decodeSafe(text) {
     try {
@@ -102,6 +108,9 @@ function getSurfaceRect(surface) {
 
 function getSurfaceIntrinsicSize(surface, rect) {
     if (surface instanceof HTMLImageElement) {
+        if (getSurfaceSourceUrl(surface) !== (surface.currentSrc || surface.src || "")) {
+            return { width: rect.width, height: rect.height }
+        }
         return {
             width: surface.naturalWidth || rect.width,
             height: surface.naturalHeight || rect.height,
@@ -127,7 +136,6 @@ function isSurfaceSizeEligible(surface) {
     const rect = getSurfaceRect(surface)
     if (rect.width < MIN_RENDERED_WIDTH || rect.height < MIN_RENDERED_HEIGHT) return false
     if (rect.width * rect.height < MIN_RENDERED_AREA) return false
-    if (rect.bottom <= 0 || rect.right <= 0) return false
 
     const intrinsicSize = getSurfaceIntrinsicSize(surface, rect)
     if (intrinsicSize.width < MIN_NATURAL_WIDTH || intrinsicSize.height < MIN_NATURAL_HEIGHT) return false
@@ -144,7 +152,7 @@ function isTranslatableImage(img) {
     if (!isSurfaceSizeEligible(img)) return false
 
     const rect = getSurfaceRect(img)
-    const src = decodeSafe((img.currentSrc || img.src || "").toLowerCase())
+    const src = decodeSafe(getSurfaceSourceUrl(img).toLowerCase())
     if (!src) return false
     if (src.startsWith("data:image/svg") || /\.svg(\?|#|$)/i.test(src)) return false
     if (EXCLUDED_IMAGE_KEYWORDS.test(src)) return false
@@ -215,6 +223,8 @@ function ensureButtonLayerRoot() {
 }
 
 function getIdleButtonText(state) {
+    if (state?.autoQueued) return "等待翻译"
+    if (state?.autoStatus === "skipped") return "无气泡，点击重试"
     if (!state?.translatedDataUrl) return "翻译图片"
     return state.view === TRANSLATED_VIEW ? "查看原图" : "查看译图"
 }
@@ -257,7 +267,7 @@ function setButtonMessage(state, text, delay = BUTTON_RESET_DELAY) {
 }
 
 function buildRefererBaseUrl() {
-    return `${window.location.protocol}//${window.location.hostname}`
+    return window.location.origin || `${window.location.protocol}//${window.location.hostname}`
 }
 
 function parseResponseError(result, response) {
@@ -322,7 +332,7 @@ async function getTranslatePayload(surface) {
     const textDirection = await readStoredTextDirection()
     if (surface instanceof HTMLImageElement) {
         return {
-            image_url: surface.currentSrc || surface.src,
+            image_url: getSurfaceSourceUrl(surface),
             referer,
             source_type: "img",
             text_direction: textDirection,
@@ -378,13 +388,23 @@ function releasePositionedContainer(container) {
     positionedContainers.delete(container)
 }
 
+function getSurfaceSourceUrl(surface) {
+    let source = surface.currentSrc || surface.src || ""
+    // 常见懒加载把真实地址放在 data-* 中；提前请求它，不改动网页原来的 src。
+    if (!source || !surface.naturalWidth || surface.naturalWidth < MIN_NATURAL_WIDTH) {
+        const lazy = surface.getAttribute("data-src") || surface.getAttribute("data-original")
+            || surface.getAttribute("data-lazy-src")
+        if (lazy) {
+            try { source = new URL(lazy, document.baseURI || window.location.href).href } catch (_) { /* 等页面填入合法地址。 */ }
+        }
+    }
+    return source
+}
+
 function getSurfaceSourceSignature(surface) {
     if (surface instanceof HTMLImageElement) {
-        const source = surface.currentSrc || ""
-        const declaredSource = surface.src || ""
-        const sourceSet = surface.srcset || ""
-        const sizes = surface.sizes || ""
-        return `img:${source}|src:${declaredSource}|srcset:${sourceSet}|sizes:${sizes}|${surface.naturalWidth || 0}x${surface.naturalHeight || 0}`
+        // 加载完成后 naturalWidth 的变化不代表换图，实际图片地址才决定结果是否过期。
+        return `img:${getSurfaceSourceUrl(surface)}`
     }
     if (surface instanceof HTMLCanvasElement) {
         return `canvas:${surface.width || 0}x${surface.height || 0}`
@@ -556,12 +576,12 @@ function toggleTranslatedView(state) {
     return setTranslatedView(state, nextView)
 }
 
-async function applyTranslatedResult(state, translatedDataUrl, sourceSignature) {
+async function applyTranslatedResult(state, translatedDataUrl, sourceSignature, canApply = () => true) {
     const overlayState = ensureTranslationOverlay(state.surface, state)
     overlayState.overlay.classList.remove("is-visible")
     await loadTranslatedOverlayImage(overlayState, translatedDataUrl)
 
-    if (state.destroyed || getSurfaceSourceSignature(state.surface) !== sourceSignature) {
+    if (state.destroyed || getSurfaceSourceSignature(state.surface) !== sourceSignature || !canApply()) {
         overlayState.image.removeAttribute("src")
         throw new Error("原图已更新，请重新翻译")
     }
@@ -571,35 +591,188 @@ async function applyTranslatedResult(state, translatedDataUrl, sourceSignature) 
     return setTranslatedView(state, TRANSLATED_VIEW)
 }
 
-async function requestTranslation(surface) {
+function clearTranslationRequestCache() {
+    translationConfigVersion += 1
+    translationResults.clear()
+    translationResultBytes = 0
+    providerCheck = null
+    providerCheckedAt = 0
+}
+
+function rememberTranslation(key, result) {
+    const size = (result.res_img?.length || 0) * 2
+    if (size > 48 * 1024 * 1024) return
+    if (translationResults.has(key)) {
+        translationResultBytes -= (translationResults.get(key).res_img?.length || 0) * 2
+        translationResults.delete(key)
+    }
+    while (translationResults.size && (translationResults.size >= 24 || translationResultBytes + size > 48 * 1024 * 1024)) {
+        const oldest = translationResults.keys().next().value
+        translationResultBytes -= (translationResults.get(oldest).res_img?.length || 0) * 2
+        translationResults.delete(oldest)
+    }
+    translationResults.set(key, result)
+    translationResultBytes += size
+}
+
+async function checkTranslationProvider() {
+    if (!providerCheck || Date.now() - providerCheckedAt > 30000) {
+        providerCheckedAt = Date.now()
+        const pending = ensureTranslationProvider().catch((error) => {
+            if (providerCheck === pending) providerCheck = null
+            error.pauseAutomatic = true
+            throw error
+        })
+        providerCheck = pending
+    }
+    return providerCheck
+}
+
+async function requestTranslation(surface, { retry = false } = {}) {
     const payload = await getTranslatePayload(surface)
-    await ensureTranslationProvider()
-    const response = await fetch(TRANSLATE_API_URL, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-    })
+    const configVersion = translationConfigVersion
+    // Canvas 快照可能很大，不把 base64 正文长期保留在缓存键中。
+    const cacheable = surface instanceof HTMLImageElement
+    const key = cacheable ? JSON.stringify([configVersion, payload]) : surface
+    if (retry) payload.force_refresh = true
+    if (!retry && translationResults.has(key)) {
+        const cached = translationResults.get(key)
+        translationResults.delete(key)
+        translationResults.set(key, cached)
+        return { ...cached, cache_hit: true }
+    }
+    if (translationRequests.has(key)) return translationRequests.get(key)
+    const pending = (async () => {
+        await checkTranslationProvider()
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 180000)
+        let response
+        let result = null
+        try {
+            response = await fetch(TRANSLATE_API_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+                signal: controller.signal,
+            })
+            try { result = await response.json() } catch (_) { /* 下方统一报告无效响应。 */ }
+        } catch (error) {
+            error.pauseAutomatic = true
+            throw error
+        } finally {
+            clearTimeout(timeout)
+        }
+        if (!response.ok) {
+            const error = new Error(parseResponseError(result, response))
+            error.pauseAutomatic = [401, 403, 429, 503].includes(response.status)
+                || result?.code === "MISSING_TRANSLATE_CONFIG"
+            throw error
+        }
+        logTranslateResult(result)
+        // 兼容旧后端的“未检测出文字”，正常跳过不进入失败重试。
+        if (result?.code === "NO_TEXT_BUBBLES" || /未检测出文字/.test(result?.info || "")) {
+            result = { ...result, status: "skipped", code: "NO_TEXT_BUBBLES" }
+        } else if (result?.status !== "success") {
+            throw new Error(result?.info || "error")
+        }
+        if (cacheable && configVersion === translationConfigVersion && (result.status === "skipped" || result.res_img)) {
+            rememberTranslation(key, result)
+        }
+        return result
+    })()
+    translationRequests.set(key, pending)
+    try { return await pending } finally { translationRequests.delete(key) }
+}
 
-    let result = null
+function syncSurfaceSource(state) {
+    const source = getSurfaceSourceSignature(state.surface)
+    if (source === state.knownSource) return false
+    state.knownSource = source
+    state.requestVersion += 1
+    state.autoStatus = "idle"
+    state.manualOriginal = false
+    invalidateTranslatedResult(state)
+    return true
+}
+
+async function translateSurface(state, { automatic = false, epoch = autoTranslation.epoch } = {}) {
+    const { surface, button } = state
+    if (state.isTranslating || state.destroyed) return
+    syncSurfaceSource(state)
+    if (!automatic && state.translatedDataUrl) {
+        toggleTranslatedView(state)
+        state.manualOriginal = state.view === ORIGINAL_VIEW
+        return
+    }
+    if (!isTranslatableSurface(surface)) {
+        if (!automatic) setButtonMessage(state, "仅支持漫画图", 1200)
+        return
+    }
+    const retry = !automatic && ["skipped", "failed"].includes(state.autoStatus)
+    state.isTranslating = true
+    state.autoQueued = false
+    state.autoStatus = "running"
+    state.wasAutomatic = automatic
+    state.requestVersion += 1
+    const requestVersion = state.requestVersion
+    const sourceSignature = getSurfaceSourceSignature(surface)
+    const isCurrent = () => !state.destroyed && requestVersion === state.requestVersion
+        && getSurfaceSourceSignature(surface) === sourceSignature
+    const mayApply = () => isCurrent() && (!automatic || (autoTranslation.enabled && epoch === autoTranslation.epoch))
+    if (!automatic) autoTranslation.manualActive += 1
+    if (state.resetTimeout) clearTimeout(state.resetTimeout)
+    state.resetTimeout = 0
+    button.textContent = "处理中..."
+    button.title = button.textContent
+    button.setAttribute("aria-label", button.textContent)
+    button.setAttribute("aria-busy", "true")
     try {
-        result = await response.json()
+        const result = await requestTranslation(surface, { retry })
+        if (!isCurrent()) return
+        if (result.code === "NO_TEXT_BUBBLES") {
+            state.autoStatus = "skipped"
+            setIdleButtonState(state)
+            return
+        }
+        // 关闭开关或改设置后，已发出的计算允许结束并缓存，但不再自动覆盖画面。
+        if (!mayApply()) return
+        if (typeof result.res_img !== "string" || !result.res_img.trim()) throw new Error("后端未返回译图，请重试")
+        await applyTranslatedResult(state, "data:image/png;base64," + result.res_img, sourceSignature, mayApply)
+        state.autoStatus = "complete"
+        state.lastResultCached = result.cache_hit || result.coalesced
+        button.textContent = "翻译完成"
+        button.title = button.textContent
+        button.setAttribute("aria-label", button.textContent)
     } catch (error) {
-        result = null
+        if (!mayApply()) return
+        clearTranslatedResult(state)
+        state.autoStatus = "failed"
+        console.error("翻译失败:", error)
+        const message = error?.message || String(error || "")
+        if (isMissingProviderConfigMessage(message)) {
+            button.textContent = "请先配置翻译接口"
+        } else if (surface instanceof HTMLCanvasElement && isCanvasReadBlockedError(error)) {
+            button.textContent = "该页面canvas无法转base64"
+        } else if (/structured|格式|数量|不匹配|列表|list/i.test(message)) {
+            button.textContent = "请重试/切并行"
+        } else {
+            button.textContent = "翻译失败，点击重试"
+        }
+        button.title = message || button.textContent
+        button.setAttribute("aria-label", button.textContent)
+        if (automatic && (error.pauseAutomatic || isMissingProviderConfigMessage(message))) {
+            autoTranslation.paused = isMissingProviderConfigMessage(message) ? "请先配置翻译接口" : "服务不可用或繁忙"
+        }
+    } finally {
+        if (state.autoStatus === "running") state.autoStatus = "idle"
+        state.isTranslating = false
+        if (!automatic) autoTranslation.manualActive -= 1
+        if (!state.destroyed) {
+            button.removeAttribute("aria-busy")
+            scheduleButtonReset(state, state.translatedDataUrl ? TRANSLATION_SUCCESS_DELAY : BUTTON_RESET_DELAY)
+        }
+        scheduleAutomaticTranslation()
     }
-
-    if (!response.ok) {
-        throw new Error(parseResponseError(result, response))
-    }
-
-    logTranslateResult(result)
-
-    if (result?.status !== "success") {
-        throw new Error(result?.info || "error")
-    }
-
-    return result
 }
 
 function createTranslateButton(surface) {
@@ -639,9 +812,15 @@ function createTranslateButton(surface) {
         requestVersion: 0,
         destroyed: false,
         surfaceLoadHandler: null,
+        knownSource: getSurfaceSourceSignature(surface),
+        autoStatus: "idle",
+        autoQueued: false,
+        manualOriginal: false,
+        wasAutomatic: false,
     }
 
     surfaceButtons.set(surface, state)
+    registerAutomaticSurface(state)
 
     const updateButtonPosition = () => {
         const rect = getSurfaceRect(surface)
@@ -651,9 +830,7 @@ function createTranslateButton(surface) {
 
     const showButton = () => {
         clearHideTimer(state)
-        if (hasSurfaceSourceChanged(state)) {
-            invalidateTranslatedResult(state)
-        }
+        syncSurfaceSource(state)
         if (!surface.isConnected || !isTranslatableSurface(surface)) {
             button.style.setProperty("display", "none", "important")
             return
@@ -679,85 +856,7 @@ function createTranslateButton(surface) {
         event.preventDefault()
         event.stopPropagation()
         event.stopImmediatePropagation()
-
-        if (state.isTranslating) return
-
-        if (hasSurfaceSourceChanged(state)) {
-            invalidateTranslatedResult(state)
-        }
-
-        if (state.translatedDataUrl) {
-            toggleTranslatedView(state)
-            return
-        }
-
-        if (!isTranslatableSurface(surface)) {
-            setButtonMessage(state, "仅支持漫画图", 1200)
-            return
-        }
-
-        state.isTranslating = true
-        state.requestVersion += 1
-        const requestVersion = state.requestVersion
-        const sourceSignature = getSurfaceSourceSignature(surface)
-        if (state.resetTimeout) {
-            clearTimeout(state.resetTimeout)
-            state.resetTimeout = 0
-        }
-        button.textContent = "处理中..."
-        button.title = "处理中..."
-        button.setAttribute("aria-label", "处理中...")
-        button.setAttribute("aria-busy", "true")
-
-        try {
-            const result = await requestTranslation(surface)
-            if (state.destroyed || requestVersion !== state.requestVersion) {
-                throw new Error("原图已更新，请重新翻译")
-            }
-            if (getSurfaceSourceSignature(surface) !== sourceSignature) {
-                throw new Error("原图已更新，请重新翻译")
-            }
-            if (typeof result?.res_img !== "string" || !result.res_img.trim()) {
-                throw new Error("后端未返回译图，请重试")
-            }
-            const translatedDataUrl = "data:image/png;base64," + result.res_img
-            await applyTranslatedResult(state, translatedDataUrl, sourceSignature)
-            button.textContent = "翻译完成"
-            button.title = "翻译完成"
-            button.setAttribute("aria-label", "翻译完成")
-        } catch (error) {
-            clearTranslatedResult(state)
-            console.error("翻译失败:", error)
-            const errorMessage = error instanceof Error ? error.message : String(error || "")
-            if (/原图已更新/i.test(errorMessage)) {
-                button.textContent = "原图已更新，请重试"
-            } else if (isMissingProviderConfigMessage(errorMessage)) {
-                button.textContent = "请先配置翻译接口"
-            } else if (surface instanceof HTMLCanvasElement) {
-                if (isCanvasReadBlockedError(error)) {
-                    button.textContent = "该页面canvas无法转base64"
-                } else if (/structured|格式|数量|不匹配|列表|list/i.test(errorMessage)) {
-                    button.textContent = "请重试/切并行"
-                } else {
-                    button.textContent = "翻译失败"
-                }
-            } else {
-                if (/structured|格式|数量|不匹配|列表|list/i.test(errorMessage)) {
-                    button.textContent = "请重试/切并行"
-                } else {
-                    button.textContent = "翻译失败"
-                }
-            }
-            button.title = button.textContent
-            button.setAttribute("aria-label", button.textContent)
-        }
-
-        scheduleButtonReset(
-            state,
-            state.translatedDataUrl ? TRANSLATION_SUCCESS_DELAY : BUTTON_RESET_DELAY,
-        )
-        state.isTranslating = false
-        button.removeAttribute("aria-busy")
+        await translateSurface(state)
     }
 
     button.addEventListener("pointerdown", activateButton, true)
@@ -769,10 +868,8 @@ function createTranslateButton(surface) {
 
     if (surface instanceof HTMLImageElement) {
         state.surfaceLoadHandler = () => {
-            if (hasSurfaceSourceChanged(state)) {
-                state.requestVersion += 1
-                invalidateTranslatedResult(state)
-            }
+            syncSurfaceSource(state)
+            scheduleAutomaticTranslation()
         }
         surface.addEventListener("load", state.surfaceLoadHandler)
     }
@@ -803,6 +900,8 @@ function cleanupSurface(surface) {
 
     state.destroyed = true
     state.requestVersion += 1
+    autoTranslation.surfaces.delete(state)
+    autoTranslation.observer?.unobserve(surface)
     clearHideTimer(state)
     if (state.resetTimeout) {
         clearTimeout(state.resetTimeout)
@@ -830,9 +929,186 @@ function handleRemovedNode(node) {
 function handleSurfaceAttributeChange(node) {
     if (!(node instanceof HTMLImageElement)) return
     const state = surfaceButtons.get(node)
-    if (!state || !hasSurfaceSourceChanged(state)) return
-    state.requestVersion += 1
-    invalidateTranslatedResult(state)
+    if (!state) return
+    syncSurfaceSource(state)
+    scheduleAutomaticTranslation()
+}
+
+// 与悬停按钮使用同一入口，避免浏览器沿用旧清单时漏载自动翻译依赖。
+// 自动翻译只负责挑选和调度图片；请求、回填及原图切换复用上方逻辑。
+const AUTO_TRANSLATE_SITE_PREFIX = "auto_translate_site:"
+const AUTO_TRANSLATE_CONCURRENCY = 2
+const autoTranslation = {
+    enabled: false,
+    epoch: 0,
+    paused: "",
+    surfaces: new Set(),
+    active: 0,
+    manualActive: 0,
+    timer: 0,
+    observer: null,
+    averageMs: 15000,
+    speed: 0,
+    direction: 1,
+    lastScrollY: 0,
+    lastScrollAt: 0,
+    lastScrollTarget: null,
+}
+
+function autoSiteStorageKey() {
+    return AUTO_TRANSLATE_SITE_PREFIX + new URL(window.location.href || buildRefererBaseUrl()).origin
+}
+
+function registerAutomaticSurface(state) {
+    // Canvas 的同尺寸重绘不能由 DOM 观察器可靠识别，仍保留手动翻译。
+    if (!(state.surface instanceof HTMLImageElement)) return
+    autoTranslation.surfaces.add(state)
+    autoTranslation.observer?.observe(state.surface)
+    scheduleAutomaticTranslation()
+}
+
+function scheduleAutomaticTranslation() {
+    if (!autoTranslation.enabled || autoTranslation.timer) return
+    autoTranslation.timer = setTimeout(() => {
+        autoTranslation.timer = 0
+        pumpAutomaticTranslation()
+    }, 120)
+}
+
+function automaticWindow() {
+    const height = window.innerHeight || 900
+    const width = window.innerWidth || 1200
+    const items = []
+    for (const state of autoTranslation.surfaces) {
+        if (state.destroyed || !isTranslatableImage(state.surface)) continue
+        const url = getSurfaceSourceUrl(state.surface)
+        if (!/^https?:\/\//i.test(url)) continue
+        const rect = getSurfaceRect(state.surface)
+        if (rect.right <= 0 || rect.left >= width) continue
+        items.push({ state, rect })
+    }
+    const visible = items.filter(({ rect }) => rect.bottom > 0 && rect.top < height)
+    const ahead = items.filter(({ rect }) => autoTranslation.direction > 0 ? rect.top >= height : rect.bottom <= 0)
+    visible.sort((a, b) => a.rect.top - b.rect.top)
+    ahead.sort((a, b) => autoTranslation.direction > 0 ? a.rect.top - b.rect.top : b.rect.bottom - a.rect.bottom)
+    const typicalHeight = items.length ? items.reduce((sum, item) => sum + item.rect.height, 0) / items.length : height
+    // 预译窗口按阅读速度和实测耗时调整；已完成图片也占窗口位置，避免空闲时跑完整章。
+    const count = autoTranslation.speed > 0
+        ? Math.max(3, Math.min(8, Math.ceil(autoTranslation.speed * autoTranslation.averageMs / 1000 / typicalHeight) + 2))
+        : 4
+    return [...visible, ...ahead.slice(0, count)].map(({ state }) => state)
+}
+
+function trimAutomaticOverlays(keep) {
+    const completed = [...autoTranslation.surfaces].filter((state) => state.wasAutomatic && state.translatedDataUrl)
+    let bytes = completed.reduce((sum, state) => sum + state.translatedDataUrl.length * 2, 0)
+    let count = completed.length
+    for (const state of completed) {
+        if (count <= 12 && bytes <= 48 * 1024 * 1024) break
+        if (keep.has(state) || state.isTranslating) continue
+        bytes -= state.translatedDataUrl.length * 2
+        count -= 1
+        clearTranslatedResult(state)
+        removeTranslationOverlay(state.surface)
+        state.autoStatus = "idle"
+    }
+}
+
+function pumpAutomaticTranslation() {
+    for (const state of autoTranslation.surfaces) {
+        if (state.autoQueued) {
+            state.autoQueued = false
+            if (!state.isTranslating) setIdleButtonState(state)
+        }
+    }
+    if (!autoTranslation.enabled || autoTranslation.paused || document.visibilityState === "hidden") {
+        return
+    }
+    const windowStates = automaticWindow()
+    for (const state of windowStates) {
+        syncSurfaceSource(state)
+        if (state.isTranslating || state.translatedDataUrl || state.manualOriginal
+            || ["skipped", "failed", "complete"].includes(state.autoStatus)) continue
+        state.autoQueued = true
+        setIdleButtonState(state)
+        if (autoTranslation.active >= AUTO_TRANSLATE_CONCURRENCY || autoTranslation.manualActive) continue
+        const epoch = autoTranslation.epoch
+        state.autoQueued = false
+        autoTranslation.active += 1
+        const started = Date.now()
+        void translateSurface(state, { automatic: true, epoch }).finally(() => {
+            autoTranslation.active -= 1
+            if (state.autoStatus === "complete" && !state.lastResultCached) {
+                autoTranslation.averageMs = autoTranslation.averageMs * 0.7 + (Date.now() - started) * 0.3
+            }
+            trimAutomaticOverlays(new Set(automaticWindow()))
+            scheduleAutomaticTranslation()
+        })
+    }
+    trimAutomaticOverlays(new Set(windowStates))
+}
+
+function setAutomaticTranslation(enabled) {
+    autoTranslation.enabled = enabled === true
+    autoTranslation.epoch += 1
+    autoTranslation.paused = ""
+    if (autoTranslation.timer) clearTimeout(autoTranslation.timer)
+    autoTranslation.timer = 0
+    for (const state of autoTranslation.surfaces) {
+        state.autoQueued = false
+        if (state.autoStatus === "failed") state.autoStatus = "idle"
+        if (!state.isTranslating) setIdleButtonState(state)
+    }
+    scheduleAutomaticTranslation()
+}
+
+function automaticConfigChanged() {
+    autoTranslation.epoch += 1
+    autoTranslation.paused = ""
+    clearTranslationRequestCache()
+    for (const state of autoTranslation.surfaces) {
+        state.requestVersion += 1
+        invalidateTranslatedResult(state)
+        // 无气泡不受译文排版影响；其他结果按新配置重新生成。
+        if (state.autoStatus !== "skipped") state.autoStatus = "idle"
+    }
+    scheduleAutomaticTranslation()
+}
+
+function initAutomaticTranslation() {
+    const storage = globalThis.chrome?.storage
+    storage?.local?.get({ [autoSiteStorageKey()]: false }, (values) => {
+        if (globalThis.chrome?.runtime?.lastError) return
+        setAutomaticTranslation(values[autoSiteStorageKey()])
+    })
+    storage?.onChanged?.addListener((changes, area) => {
+        if (area !== "local") return
+        if (changes[autoSiteStorageKey()]) setAutomaticTranslation(changes[autoSiteStorageKey()].newValue)
+        if (changes.translate_text_direction || changes.translate_config_revision) automaticConfigChanged()
+    })
+    if (typeof IntersectionObserver !== "undefined") {
+        autoTranslation.observer = new IntersectionObserver(scheduleAutomaticTranslation, { rootMargin: "3000px 0px" })
+        for (const state of autoTranslation.surfaces) autoTranslation.observer.observe(state.surface)
+    }
+    autoTranslation.lastScrollY = window.scrollY || 0
+    autoTranslation.lastScrollAt = Date.now()
+    window.addEventListener("scroll", (event) => {
+        const now = Date.now()
+        const target = event.target === document ? window : event.target
+        const y = target === window ? (window.scrollY || 0) : (target.scrollTop || 0)
+        const delta = autoTranslation.lastScrollTarget === target ? y - autoTranslation.lastScrollY : 0
+        autoTranslation.lastScrollTarget = target
+        if (Math.abs(delta) > 4) {
+            const elapsed = Math.max(100, now - autoTranslation.lastScrollAt)
+            autoTranslation.speed = autoTranslation.speed * 0.6 + Math.min(4000, Math.abs(delta) * 1000 / elapsed) * 0.4
+            autoTranslation.direction = delta > 0 ? 1 : -1
+        }
+        autoTranslation.lastScrollY = y
+        autoTranslation.lastScrollAt = now
+        scheduleAutomaticTranslation()
+    }, { passive: true, capture: true })
+    window.addEventListener("resize", scheduleAutomaticTranslation)
+    document.addEventListener("visibilitychange", scheduleAutomaticTranslation)
 }
 
 const observer = new MutationObserver((mutations) => {
@@ -848,9 +1124,10 @@ const observer = new MutationObserver((mutations) => {
 
 observer.observe(document.body, {
     attributes: true,
-    attributeFilter: ["sizes", "src", "srcset"],
+    attributeFilter: ["sizes", "src", "srcset", "data-src", "data-original", "data-lazy-src"],
     childList: true,
     subtree: true,
 })
 
 init()
+initAutomaticTranslation()

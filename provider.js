@@ -1,12 +1,18 @@
 const PROVIDER_CONFIG_URL = "http://127.0.0.1:8000/conf"
 
 async function requestProviderConfig(path, options = { method: "GET" }) {
-  const response = await fetch(`${PROVIDER_CONFIG_URL}/${path}`, options)
-  const conf = await response.json()
-  if (!response.ok) {
-    throw new Error(conf?.detail || conf?.message || `接口配置请求失败 (${response.status})`)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10000)
+  try {
+    const response = await fetch(`${PROVIDER_CONFIG_URL}/${path}`, { ...options, signal: controller.signal })
+    const conf = await response.json()
+    if (!response.ok) {
+      throw new Error(conf?.detail || conf?.message || `接口配置请求失败 (${response.status})`)
+    }
+    return conf
+  } finally {
+    clearTimeout(timeout)
   }
-  return conf
 }
 
 async function ensureTranslationProvider(conf, preferCustom = false) {

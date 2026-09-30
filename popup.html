@@ -16,10 +16,16 @@
         </span>
       </div>
       <h1>翻译配置</h1>
-      <p class="hero-text">切换翻译供应商、模式、文字方向与计算设备</p>
     </header>
 
     <section class="form-card">
+      <div class="auto-translate-field">
+        <span class="field-label">本站自动翻译</span>
+        <span class="auto-translate-control">
+          <span id="auto-translate-status" aria-live="polite">关闭</span>
+          <input id="auto-translate-toggle" type="checkbox" role="switch" aria-label="本站自动翻译" disabled>
+        </span>
+      </div>
       <label class="field" for="provider-select">
         <span class="field-label">翻译供应商</span>
         <select class="field-input" id="provider-select"></select>
@@ -36,9 +42,6 @@
         <span class="field-label">计算设备</span>
         <select class="field-input" id="device-select"></select>
       </label>
-      <p class="mode-tip" id="mode-tip">parallel：逐句并发翻译，适合长文本分段处理。</p>
-      <p class="mode-tip" id="direction-tip">横排：使用当前默认布局，适合大多数气泡回填。</p>
-      <p class="mode-tip" id="device-tip">CPU：兼容性更好，无需独立显卡。</p>
       <p class="error-tip" id="error-tip" hidden></p>
     </section>
 
@@ -112,5 +115,6 @@
   <script src="provider.js"></script>
   <script src="updates.js"></script>
   <script src="popup.js"></script>
+  <script src="automatic-settings.js"></script>
 </body>
 </html>

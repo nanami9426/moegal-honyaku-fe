@@ -28,29 +28,14 @@ const MODE_LABEL = {
   structured: "structured",
 }
 
-const MODE_DESC = {
-  parallel: "parallel：速度更稳定，逐句并发请求，适合长文本分段翻译。",
-  structured: "structured：一次请求完成整组翻译，适合需要统一上下文的场景。",
-}
-
 const TEXT_DIRECTION_LABEL = {
   horizontal: "横排",
   vertical: "竖排",
 }
 
-const TEXT_DIRECTION_DESC = {
-  horizontal: "横排：使用当前默认布局，适合大多数气泡回填。",
-  vertical: "竖排：按自上而下、列从右到左的方式回填文字。",
-}
-
 const DEVICE_LABEL = {
   cpu: "CPU",
   gpu: "GPU",
-}
-
-const DEVICE_DESC = {
-  cpu: "CPU：兼容性更好，无需独立显卡。",
-  gpu: "GPU：加速 OCR；CUDA 不可用时会自动回退到 CPU。",
 }
 
 const state = {
@@ -102,9 +87,6 @@ const view = {
   currentMode: null,
   currentDirection: null,
   currentDevice: null,
-  modeTip: null,
-  directionTip: null,
-  deviceTip: null,
   errorTip: null,
   syncStatus: null,
   lastSync: null,
@@ -215,16 +197,8 @@ function modeLabel(value) {
   return MODE_LABEL[value] || value
 }
 
-function modeTip(value) {
-  return MODE_DESC[value] || "可选择并行或结构化翻译模式。"
-}
-
 function textDirectionLabel(value) {
   return TEXT_DIRECTION_LABEL[value] || TEXT_DIRECTION_LABEL[DEFAULT_TEXT_DIRECTION]
-}
-
-function textDirectionTip(value) {
-  return TEXT_DIRECTION_DESC[value] || TEXT_DIRECTION_DESC[DEFAULT_TEXT_DIRECTION]
 }
 
 function normalizeTextDirection(value) {
@@ -246,10 +220,6 @@ function deviceValue(useGpu) {
 
 function deviceLabel(value) {
   return DEVICE_LABEL[value] || DEVICE_LABEL.cpu
-}
-
-function deviceTip(value) {
-  return state.gpuStatus.message || DEVICE_DESC[value] || DEVICE_DESC.cpu
 }
 
 function normalizeGpuStatus(payload, requested) {
@@ -319,9 +289,6 @@ function renderCurrent() {
   view.currentMode.textContent = modeLabel(state.current.translate_mode)
   view.currentDirection.textContent = textDirectionLabel(state.local.text_direction)
   view.currentDevice.textContent = deviceLabel(state.gpuStatus.device)
-  view.modeTip.textContent = modeTip(state.current.translate_mode)
-  view.directionTip.textContent = textDirectionTip(state.local.text_direction)
-  view.deviceTip.textContent = deviceTip(deviceValue(state.current.use_gpu))
   setError([currentProviderStatusMessage(), currentGpuStatusMessage()].filter(Boolean).join("；"))
 }
 
@@ -988,7 +955,13 @@ function applyConfig(conf) {
 }
 
 async function hydrateTextDirection() {
-  applyTextDirection(await readStoredTextDirection())
+    applyTextDirection(await readStoredTextDirection())
+}
+
+function broadcastTranslationConfigChange() {
+  getExtensionStorageArea()?.set({ translate_config_revision: Date.now() }, () => {
+    if (globalThis.chrome?.runtime?.lastError) console.error("同步翻译配置变更失败", chrome.runtime.lastError)
+  })
 }
 
 async function syncConfig() {
@@ -1001,7 +974,10 @@ async function syncConfig() {
     state.hydrating = true
     renderSelect(view.providerSelect, state.options.translate_api_type, providerLabel)
     renderSelect(view.modeSelect, state.options.translate_mode, modeLabel)
-    applyConfig(await ensureTranslationProvider(await queryConf(), true))
+    const previousConf = await queryConf()
+    const nextConf = await ensureTranslationProvider(previousConf, true)
+    applyConfig(nextConf)
+    if (nextConf.translate_api_type !== previousConf.translate_api_type) broadcastTranslationConfigChange()
     state.hydrating = false
 
     view.lastSync.textContent = now()
@@ -1036,6 +1012,10 @@ async function onConfigChange(attr, value) {
 
   try {
     applyConfig(await updateConf(attr, value))
+    if (state.current[attr] !== oldValue) {
+      // 通知各网页清理旧配置的译图和待处理结果，避免跨标签沿用旧供应商或模式。
+      broadcastTranslationConfigChange()
+    }
     view.lastSync.textContent = now()
     setStatus("保存成功", "is-ok")
   } catch (error) {
@@ -1148,9 +1128,6 @@ async function init() {
   view.currentMode = document.getElementById("current-mode")
   view.currentDirection = document.getElementById("current-direction")
   view.currentDevice = document.getElementById("current-device")
-  view.modeTip = document.getElementById("mode-tip")
-  view.directionTip = document.getElementById("direction-tip")
-  view.deviceTip = document.getElementById("device-tip")
   view.errorTip = document.getElementById("error-tip")
   view.syncStatus = document.getElementById("sync-status")
   view.lastSync = document.getElementById("last-sync")

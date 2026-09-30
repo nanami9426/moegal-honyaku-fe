@@ -158,6 +158,7 @@ class FakeImage extends FakeElement {
     this.alt = "manga page"
     this.draggable = true
     this.failNextLoad = false
+    this.complete = true
   }
 
   get src() {
@@ -209,7 +210,7 @@ class FakeResizeObserver {
   }
 }
 
-function createHarness() {
+function createHarness({ scripts } = {}) {
   const body = new FakeElement("body")
   body.rect = { bottom: 900, height: 900, left: 0, right: 600, top: 0, width: 600 }
   const timers = new Map()
@@ -222,6 +223,9 @@ function createHarness() {
   const document = {
     body,
     documentElement: body,
+    baseURI: "https://example.com/chapter/1",
+    visibilityState: "visible",
+    addEventListener() {},
     createElement(name) {
       if (name === "img") {
         const image = new FakeImage()
@@ -237,6 +241,7 @@ function createHarness() {
   }
 
   const context = {
+    AbortController,
     Element: FakeElement,
     HTMLCanvasElement: FakeCanvas,
     HTMLImageElement: FakeImage,
@@ -274,8 +279,8 @@ function createHarness() {
       deferredFetch = null
       return {
         json: async () => payload,
-        ok: true,
-        status: 200,
+        ok: !payload.httpStatus || payload.httpStatus < 400,
+        status: payload.httpStatus || 200,
       }
     },
     queueMicrotask,
@@ -285,6 +290,10 @@ function createHarness() {
       return timerId
     },
     window: {
+      innerHeight: 900,
+      innerWidth: 1200,
+      scrollY: 0,
+      addEventListener() {},
       getComputedStyle(node) {
         return {
           borderRadius: "8px",
@@ -294,6 +303,8 @@ function createHarness() {
         }
       },
       location: {
+        href: "https://example.com/chapter/1",
+        origin: "https://example.com",
         hostname: "example.com",
         protocol: "https:",
       },
@@ -301,12 +312,23 @@ function createHarness() {
   }
   context.globalThis = context
 
-  const source = readFileSync(new URL("../provider.js", import.meta.url), "utf8") + "\n" +
-    readFileSync(new URL("../content.js", import.meta.url), "utf8")
-  const sourceWithoutBoot = source.replace(/\nconst observer = new MutationObserver[\s\S]*?\ninit\(\)\s*$/, "")
+  const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"))
+  const source = (scripts || manifest.content_scripts[0].js)
+    .map((file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8")).join("\n")
+  const sourceWithoutBoot = source.replace(/\nconst observer = new MutationObserver[\s\S]*$/, "")
   vm.runInNewContext(
     `${sourceWithoutBoot}\n;globalThis.__contentTest = {
       cleanupSurface,
+      autoTranslation,
+      automaticWindow,
+      automaticConfigChanged,
+      pumpAutomaticTranslation,
+      setAutomaticTranslation,
+      syncSurfaceSource,
+      translateSurface,
+      getSurfaceSourceUrl,
+      handleAddedNode,
+      handleSurfaceAttributeChange,
       createTranslateButton,
       getSurfaceSourceSignature,
       handleRemovedNode,
@@ -334,6 +356,10 @@ function createHarness() {
     },
     failOverlayImageLoad() {
       failNextOverlayImage = true
+    },
+    async settle() {
+      // 排空请求、图片加载及 finally 调度产生的微任务，不靠真实定时等待。
+      for (let i = 0; i < 40; i += 1) await Promise.resolve()
     },
     deferFetch() {
       let resolve
@@ -511,4 +537,246 @@ test("覆盖层包含顺滑过渡和减少动态效果降级", () => {
   assert.match(css, /\.moegal-translate-overlay\.is-visible/)
   assert.match(css, /pointer-events:\s*none/)
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/)
+})
+
+function addPage(harness, name, top = 100) {
+  const image = new FakeImage(`https://example.com/${name}.jpg`)
+  image.rect.top = top
+  image.rect.bottom = top + image.rect.height
+  harness.body.appendChild(image)
+  harness.createTranslateButton(image)
+  return harness.surfaceButtons.get(image)
+}
+
+test("扩展仍按旧清单加载时，悬停按钮也能显示并手动翻译", async () => {
+  // 更新源码后仅刷新网页时，浏览器可能仍使用旧的脚本清单。
+  for (const scripts of [
+    ["provider.js", "content.js"],
+    ["provider.js", "auto-translate.js", "content.js"],
+  ]) {
+    const h = createHarness({ scripts })
+    const state = addPage(h, "legacy-manifest")
+    state.surface.listeners.get("mouseenter")[0]()
+    assert.equal(state.button.style.values.get("display"), "block")
+    await activate(state)
+    assert.equal(state.view, "translated")
+    assert.equal(h.fetchCalls, 1)
+  }
+})
+
+test("自动翻译开关及无气泡状态不影响悬停按钮和手动重试", async () => {
+  const h = createHarness()
+  const state = addPage(h, "hover-page")
+  h.setFetchPayload({ status: "skipped", code: "NO_TEXT_BUBBLES" })
+  for (const enabled of [false, true, false]) {
+    h.setAutomaticTranslation(enabled)
+    h.pumpAutomaticTranslation()
+    await h.settle()
+    state.surface.listeners.get("mouseenter")[0]()
+    assert.equal(state.button.style.values.get("display"), "block")
+  }
+  assert.equal(state.button.textContent, "无气泡，点击重试")
+  h.setFetchPayload({ status: "success", res_img: "retried" })
+  await activate(state)
+  state.surface.listeners.get("mouseleave")[0]()
+  state.button.listeners.get("mouseenter")[0]()
+  h.flushTimers()
+  assert.equal(state.button.style.values.get("display"), "block")
+  assert.equal(state.button.textContent, "查看原图")
+})
+
+test("自动翻译默认关闭，开启后提前翻译视野外后续图片并限制并发", async () => {
+  const h = createHarness()
+  const states = Array.from({ length: 10 }, (_, i) => addPage(h, `page-${i}`, 100 + i * 1000))
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.fetchCalls, 0)
+  const resolve = h.deferFetch()
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.fetchCalls, 2)
+  assert.equal(states[1].isTranslating, true)
+  assert.equal(h.autoTranslation.active, 2)
+  resolve({ status: "success", res_img: "translated" })
+  await h.settle()
+  for (let i = 0; i < 4; i += 1) { h.flushTimers(); await h.settle() }
+  assert.equal(h.fetchCalls, 5) // 当前一张 + 后续四张，不会把整章全部处理。
+  assert.equal(states[4].view, "translated")
+  assert.equal(states[5].translatedDataUrl, null)
+})
+
+test("无气泡记为跳过，反复滚动不重试，但允许手动重试", async () => {
+  const h = createHarness()
+  const state = addPage(h, "cover")
+  h.setFetchPayload({ status: "skipped", code: "NO_TEXT_BUBBLES" })
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(state.autoStatus, "skipped")
+  for (let i = 0; i < 4; i += 1) { h.pumpAutomaticTranslation(); await h.settle() }
+  assert.equal(h.fetchCalls, 1)
+  assert.equal(h.translationOverlays.has(state.surface), false)
+  h.setFetchPayload({ status: "success", res_img: "retried" })
+  await activate(state)
+  assert.equal(h.fetchCalls, 2)
+  assert.equal(state.view, "translated")
+})
+
+test("旧后端的无文字响应也作为正常跳过", async () => {
+  const h = createHarness()
+  const state = addPage(h, "blank")
+  h.setFetchPayload({ status: "error", info: "未检测出文字" })
+  await activate(state)
+  assert.equal(state.autoStatus, "skipped")
+})
+
+test("手动切回原图后自动队列不改变用户选择", async () => {
+  const h = createHarness()
+  const state = addPage(h, "read-original")
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  await activate(state)
+  assert.equal(state.view, "original")
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(state.view, "original")
+  assert.equal(h.fetchCalls, 1)
+})
+
+test("请求中关闭自动翻译不会回填，重开可复用已完成结果", async () => {
+  const h = createHarness()
+  const state = addPage(h, "stop-pending")
+  const resolve = h.deferFetch()
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  h.setAutomaticTranslation(false)
+  resolve({ status: "success", res_img: "finished-after-stop" })
+  await h.settle()
+  assert.equal(state.translatedDataUrl, null)
+  assert.equal(h.autoTranslation.active, 0)
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(state.view, "translated")
+  assert.equal(h.fetchCalls, 1)
+})
+
+test("重复图片节点共用请求，随后新增相同图片复用缓存", async () => {
+  const h = createHarness()
+  const first = addPage(h, "duplicate")
+  const second = addPage(h, "duplicate", 1100)
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.fetchCalls, 1)
+  assert.equal(first.view, "translated")
+  assert.equal(second.view, "translated")
+  const third = addPage(h, "duplicate", 2100)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(third.view, "translated")
+  assert.equal(h.fetchCalls, 1)
+})
+
+test("懒加载提前使用真实地址，加载完成不使预译结果失效", async () => {
+  const h = createHarness()
+  const state = addPage(h, "placeholder", 2100)
+  state.surface.naturalWidth = 1
+  state.surface.naturalHeight = 1
+  state.surface.setAttribute("data-src", "/actual-manga.jpg")
+  h.handleSurfaceAttributeChange(state.surface)
+  assert.equal(h.getSurfaceSourceUrl(state.surface), "https://example.com/actual-manga.jpg")
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(state.view, "translated")
+  state.surface.currentSrc = "https://example.com/actual-manga.jpg"
+  state.surface.naturalWidth = 1200
+  state.surface.naturalHeight = 1800
+  state.surfaceLoadHandler()
+  assert.equal(state.view, "translated")
+  assert.equal(h.fetchCalls, 1)
+})
+
+test("跳过的图片换源后重新排队，进行中的旧结果不会覆盖新图片", async () => {
+  const h = createHarness()
+  const state = addPage(h, "first-source")
+  h.setFetchPayload({ code: "NO_TEXT_BUBBLES", status: "skipped" })
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  state.surface.currentSrc = "https://example.com/new-source.jpg"
+  h.handleSurfaceAttributeChange(state.surface)
+  h.setFetchPayload({ status: "success", res_img: "new-image" })
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.fetchCalls, 2)
+  assert.equal(state.sourceSignature, "img:https://example.com/new-source.jpg")
+})
+
+test("配置变更使正在运行的结果失效并重新排队", async () => {
+  const h = createHarness()
+  const state = addPage(h, "config-change")
+  const resolve = h.deferFetch()
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  h.automaticConfigChanged()
+  resolve({ status: "success", res_img: "old-settings" })
+  await h.settle()
+  assert.equal(state.translatedDataUrl, null)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.fetchCalls, 2)
+  assert.equal(state.view, "translated")
+})
+
+test("后台标签页暂停自动调度，恢复可见后继续", async () => {
+  const h = createHarness()
+  addPage(h, "hidden-page")
+  h.context.document.visibilityState = "hidden"
+  h.setAutomaticTranslation(true)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.fetchCalls, 0)
+  h.context.document.visibilityState = "visible"
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.fetchCalls, 1)
+})
+
+test("配置错误暂停队列，普通图片失败不阻止后续图片", async () => {
+  const h = createHarness()
+  addPage(h, "bad-provider")
+  h.setAutomaticTranslation(true)
+  h.setFetchPayload({ httpStatus: 400, status: "error", code: "MISSING_TRANSLATE_CONFIG", info: "未配置 CUSTOM_API_KEY" })
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.match(h.autoTranslation.paused, /配置/)
+  addPage(h, "next", 1100)
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.fetchCalls, 1)
+  h.setAutomaticTranslation(true)
+  h.setFetchPayload({ status: "error", info: "该图片损坏" })
+  h.pumpAutomaticTranslation()
+  await h.settle()
+  assert.equal(h.autoTranslation.paused, "")
+  assert.equal(h.fetchCalls, 3)
+})
+
+test("快速跳页和反向阅读会重新选择附近图片，Canvas 不自动提交", async () => {
+  const h = createHarness()
+  const states = Array.from({ length: 12 }, (_, i) => addPage(h, `long-${i}`, (i - 6) * 1000 + 100))
+  h.autoTranslation.direction = 1
+  assert.equal(h.automaticWindow()[1], states[7])
+  h.autoTranslation.direction = -1
+  assert.equal(h.automaticWindow()[1], states[5])
+  const canvas = new FakeCanvas()
+  h.body.appendChild(canvas)
+  h.createTranslateButton(canvas)
+  assert.equal(h.autoTranslation.surfaces.has(h.surfaceButtons.get(canvas)), false)
 })

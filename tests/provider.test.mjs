@@ -8,6 +8,9 @@ const source = readFileSync(new URL("../provider.js", import.meta.url), "utf8")
 function harness(conf, updateFails = false) {
   const updates = []
   const context = {
+    AbortController,
+    setTimeout,
+    clearTimeout,
     fetch: async (url, options) => {
       if (url.endsWith("/query")) return { ok: true, json: async () => conf }
       const update = JSON.parse(options.body)
