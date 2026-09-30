@@ -15,7 +15,7 @@ async function readInstalledCommit() {
       const info = await response.json()
       if (isCommitSha(info.commit)) return info.commit
     } catch {
-      // 旧安装可能没有标识文件，此时必须显示未知，不能假定已是最新。
+      // 旧安装可能没有标识文件，后续通过实际文件校验，不猜测安装版本。
     }
   }
   return null
@@ -39,6 +39,51 @@ async function requestUpdateJSON(path) {
   return response.json()
 }
 
+async function gitBlobSha(bytes) {
+  // Git 的文件 SHA 包含 blob 头，不能直接对文件正文计算摘要。
+  const header = new TextEncoder().encode(`blob ${bytes.byteLength}\0`)
+  const blob = new Uint8Array(header.length + bytes.byteLength)
+  blob.set(header)
+  blob.set(bytes, header.length)
+  const digest = await crypto.subtle.digest("SHA-1", blob)
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("")
+}
+
+async function matchesInstalledFiles(commit) {
+  const tree = await requestUpdateJSON(`git/trees/${commit}?recursive=1`)
+  if (tree.truncated || !Array.isArray(tree.tree)) throw new Error("无法获取完整的远端文件列表")
+  // 只比较扩展运行文件；文档、测试和生成的版本标识不代表功能更新。
+  const files = tree.tree.filter(item => item.type === "blob"
+    && typeof item.path === "string"
+    && !/(^|\/)(?:\.[^/]*|tests?|scripts|docs)(?:\/|$)/.test(item.path)
+    && !/^update-version(?:\.local)?\.json$/.test(item.path)
+    && /\.(?:[cm]?js|css|html|json|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|otf|wasm)$/i.test(item.path))
+  if (!files.some(item => item.path === "manifest.json")) throw new Error("远端文件列表缺少扩展清单")
+  for (const file of files) {
+    if (!isCommitSha(file.sha) || file.path.startsWith("/") || file.path.split("/").includes("..")) {
+      throw new Error("远端文件信息无效")
+    }
+    let bytes
+    try {
+      const path = file.path.split("/").map(encodeURIComponent).join("/")
+      const response = await fetch(chrome.runtime.getURL(path), { cache: "no-store" })
+      if (!response.ok) return false
+      bytes = new Uint8Array(await response.arrayBuffer())
+    } catch {
+      // 新版本增加文件时，本地资源不存在，说明尚未安装这份版本。
+      return false
+    }
+    if (await gitBlobSha(bytes) === file.sha) continue
+    // Windows 的 Git 签出可能转换行尾，不能把 CRLF 当作功能差异。
+    if (/\.(?:[cm]?js|css|html|json|svg)$/i.test(file.path)) {
+      const normalized = new TextEncoder().encode(new TextDecoder().decode(bytes).replace(/\r\n/g, "\n"))
+      if (await gitBlobSha(normalized) === file.sha) continue
+    }
+    return false
+  }
+  return true
+}
+
 async function checkRepositoryUpdate(localCommit) {
   const latest = await requestUpdateJSON(`commits/${UPDATE_BRANCH}`)
   if (!isCommitSha(latest.sha)) throw new Error("GitHub 返回了无效的提交信息。")
@@ -48,11 +93,17 @@ async function checkRepositoryUpdate(localCommit) {
     message: typeof latest.commit?.message === "string" ? latest.commit.message.split("\n")[0] : "",
     commitUrl: `${UPDATE_REPO_URL}/commit/${latest.sha}`,
   }
-  if (!isCommitSha(localCommit)) return { ...result, status: "unknown" }
+  if (!isCommitSha(localCommit)) {
+    return { ...result, status: await matchesInstalledFiles(latest.sha) ? "identical" : "unknown" }
+  }
   if (localCommit === latest.sha) return { ...result, status: "identical" }
   const comparison = await requestUpdateJSON(`compare/${localCommit}...${latest.sha}`)
   if (!["ahead", "behind", "diverged", "identical"].includes(comparison.status)) {
     throw new Error("GitHub 返回了无效的版本比较结果。")
+  }
+  // 源码安装后的提交或 pull 不会自动刷新 local.json；提示更新前核对真实文件。
+  if (["ahead", "diverged"].includes(comparison.status) && await matchesInstalledFiles(latest.sha)) {
+    return { ...result, status: "identical" }
   }
   return {
     ...result,
