@@ -109,13 +109,63 @@ body.is-embedded.has-custom-bg::before {
   align-items: center;
   gap: 8px;
   color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.auto-translate-field .field-label {
+  margin-bottom: 0;
 }
 
 .auto-translate-field input {
+  /* 保留原生复选框的键盘操作和状态，只替换成与面板配色一致的滑动外观。 */
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  width: 48px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--line-soft);
+  box-shadow: inset 0 1px 2px rgba(77, 59, 57, 0.06);
+  cursor: pointer;
+  transition: background-color 180ms ease, border-color 180ms ease;
+}
+
+.auto-translate-field input::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
   width: 22px;
   height: 22px;
-  flex-shrink: 0;
-  accent-color: var(--btn);
+  border-radius: 50%;
+  background: #fffaf8;
+  box-shadow: 0 1px 3px rgba(77, 59, 57, 0.2);
+  transition: transform 180ms ease;
+}
+
+.auto-translate-field input:checked {
+  background: var(--btn);
+  border-color: var(--btn);
+}
+
+.auto-translate-field input:checked::before {
+  transform: translateX(20px);
+}
+
+.auto-translate-field input:hover:not(:disabled) {
+  border-color: var(--brand-coral-deep);
+}
+
+.auto-translate-field input:focus-visible {
+  outline: 2px solid var(--brand-coral-deep);
+  outline-offset: 3px;
+}
+
+.auto-translate-field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .hero {
@@ -495,6 +545,11 @@ body.is-cropping-bg {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .auto-translate-field input,
+  .auto-translate-field input::before {
+    transition: none;
+  }
+
   .brand-typewriter {
     width: 14ch;
     border-right-color: transparent;
